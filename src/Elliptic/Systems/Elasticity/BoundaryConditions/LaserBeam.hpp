@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <pup.h>
 #include <string>
@@ -26,29 +27,17 @@ class DataVector;
 namespace Elasticity::BoundaryConditions {
 
 /*!
- * \brief A laser beam with Gaussian profile normally incident to the surface
+ * \brief Applies a pressure profile based on an INCOHERENT sum of
+ * Hermite-Gaussian modes.
  *
- * This boundary condition represents a laser beam with Gaussian profile that
- * exerts pressure normal to the surface of a reflecting material. The pressure
- * we are considering here is
+ * \details
+ * This boundary condition calculates the intensity of various Hermite-Gaussian
+ * modes individually and sums them up.
+ * - Positive weights ADD pressure (pushing into the material).
+ * - Negative weights SUBTRACT pressure (pulling out).
  *
- * \f{align}
- * n_i T^{ij} = -n^j \frac{e^{-\frac{r^2}{r_0^2}}}{\pi r_0^2}
- * \f}
- *
- * where \f$n_i\f$ is the unit normal pointing _out_ of the surface, \f$r\f$ is
- * the coordinate distance from the origin in the plane perpendicular to
- * \f$n_i\f$ and \f$r_0\f$ is the "beam width" parameter. The pressure profile
- * and the angle of incidence can be generalized in future work. Note that we
- * follow the convention of \cite Lovelace2007tn, \cite Lovelace2017xyf, and
- * \cite Vu2023thn in defining the beam width, and other publications may
- * include a factor of \f$\sqrt{2}\f$ in its definition.
- *
- * This boundary condition is used to simulate thermal noise induced in a mirror
- * by the laser, as detailed for instance in \cite Lovelace2007tn,
- * \cite Lovelace2017xyf, and \cite Vu2023thn.
- * See also `Elasticity::Solutions::HalfSpaceMirror` for
- * an analytic solution that involves this boundary condition.
+ * This is used for differential thermal noise measurements (e.g. TEM02 -
+ * TEM20). Note: The beam width 'w' is the 1/e^2 intensity radius.
  */
 class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
  private:
@@ -58,14 +47,59 @@ class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
   struct BeamWidth {
     using type = double;
     static constexpr Options::String help =
-        "The width r_0 of the Gaussian beam profile, such that FWHM = 2 * "
-        "sqrt(ln 2) * r_0";
+        "The width r_0 (1/e^2 intensity) of the beam.";
+    // Prevents division by zero in the .cpp file
     static type lower_bound() { return 0.0; }
   };
 
+  struct ModeInfo {
+    struct N {
+      using type = size_t;
+      static constexpr Options::String help = "The Hermite-Gaussian index n";
+    };
+    struct M {
+      using type = size_t;
+      static constexpr Options::String help = "The Hermite-Gaussian index m";
+    };
+    struct Weight {
+      using type = double;
+      // Updated docs to reflect that this is a multiplier for Intensity, not
+      // E-Field.
+      static constexpr Options::String help =
+          "The intensity multiplier (can be negative)";
+      // CRITICAL: No validator here! Negative values allowed for subtraction.
+    };
+
+    using options = tmpl::list<N, M, Weight>;
+    static constexpr Options::String help =
+        "A single mode in the incoherent sum.";
+
+    ModeInfo() = default;
+    ModeInfo(size_t in_n, size_t in_m, double in_weight)
+        : n(in_n), m(in_m), weight(in_weight) {}
+
+    size_t n{0};
+    size_t m{0};
+    double weight{0.0};
+
+    // Serialization for parallel distribution
+    void pup(PUP::er& p) {
+      p | n;
+      p | m;
+      p | weight;
+    }
+  };
+
+  struct PolynomialModes {
+    using type = std::vector<ModeInfo>;
+    static constexpr Options::String help =
+        "List of modes to sum. Each entry is [n, m, weight].";
+    static std::string name() { return "Modes"; }
+  };
+
   static constexpr Options::String help =
-      "A laser beam with Gaussian profile normally incident to the surface.";
-  using options = tmpl::list<BeamWidth>;
+      "A laser beam with arbitrary Hermite-Gaussian incoherent summation.";
+  using options = tmpl::list<BeamWidth, PolynomialModes>;
 
   LaserBeam() = default;
   LaserBeam(const LaserBeam&) = default;
@@ -85,9 +119,12 @@ class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
     return std::make_unique<LaserBeam>(*this);
   }
 
-  LaserBeam(double beam_width) : beam_width_(beam_width) {}
+  LaserBeam(double beam_width, const std::vector<ModeInfo>& modes);
 
   double beam_width() const { return beam_width_; }
+
+  // Accessor required for operator== in the .cpp file
+  const std::vector<ModeInfo>& modes() const { return modes_; }
 
   std::vector<elliptic::BoundaryConditionType> boundary_condition_types()
       const override {
@@ -100,6 +137,7 @@ class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
                      domain::Tags::UnnormalizedFaceNormal<3, Frame::Inertial>>>;
   using volume_tags = tmpl::list<>;
 
+  // The main physics application function
   void apply(gsl::not_null<tnsr::I<DataVector, 3>*> displacement,
              gsl::not_null<tnsr::I<DataVector, 3>*> n_dot_minus_stress,
              const tnsr::iJ<DataVector, 3>& deriv_displacement,
@@ -115,14 +153,20 @@ class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
       const tnsr::iJ<DataVector, 3>& deriv_displacement);
 
   // NOLINTNEXTLINE(google-runtime-references)
-  void pup(PUP::er& p) override { p | beam_width_; }
+  void pup(PUP::er& p) override {
+    p | beam_width_;
+    p | modes_;
+  }
 
  private:
   double beam_width_{std::numeric_limits<double>::signaling_NaN()};
+  std::vector<ModeInfo> modes_;
 };
 
+// Comparison operators defined in .cpp
 bool operator==(const LaserBeam& lhs, const LaserBeam& rhs);
-
 bool operator!=(const LaserBeam& lhs, const LaserBeam& rhs);
+bool operator==(const LaserBeam::ModeInfo& lhs, const LaserBeam::ModeInfo& rhs);
+bool operator!=(const LaserBeam::ModeInfo& lhs, const LaserBeam::ModeInfo& rhs);
 
 }  // namespace Elasticity::BoundaryConditions
