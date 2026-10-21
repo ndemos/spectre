@@ -45,8 +45,14 @@ class alignas(int[2]) ElementId {  // NOLINT(modernize-avoid-c-arrays)
  public:
   // We restrict the ElementId size to 64 bits for easy hashing into
   // size_t. This still allows us to have over 9 quadrillion elements, which is
-  // probably enough. 2^45 * 2^8 9 quadrillion elements per grid index, with
-  // up to 16 grid indices.
+  // probably enough. 2^42 (i.e. 2^14 per dimension) * 2^11 blocks is 9
+  // quadrillion elements per grid index, with up to 16 grid indices.
+  //
+  // The first 32-bit word holds the block ID, grid index, and direction, which
+  // leaves only `compact_segment_id_xi_lo_bits` bits for the xi segment ID. The
+  // xi segment ID is therefore split into a low part (stored in the first word)
+  // and a high part (stored at the start of the second word), so that no
+  // bitfield straddles the word boundary.
   //
   // Note: C++ populates bits from right to left in order of the
   // variables. This gives us the direction_mask we use below.
@@ -63,6 +69,23 @@ class alignas(int[2]) ElementId {  // NOLINT(modernize-avoid-c-arrays)
                         grid_index_bits + direction_bits ==
                     static_cast<size_t>(2 * 8) * sizeof(int),
                 "Bit representation requires padding or is too large");
+  /// Number of low bits of the xi compact segment ID stored in the first word
+  static constexpr size_t compact_segment_id_xi_lo_bits =
+      32 - (block_id_bits + grid_index_bits + direction_bits);
+  /// Number of high bits of the xi compact segment ID stored in the second word
+  static constexpr size_t compact_segment_id_xi_hi_bits =
+      max_refinement_level + 1 - compact_segment_id_xi_lo_bits;
+  static constexpr uint16_t compact_segment_id_xi_lo_mask =
+      static_cast<uint16_t>((1u << compact_segment_id_xi_lo_bits) - 1);
+  static_assert(compact_segment_id_xi_lo_bits ==
+                    32 - (block_id_bits + grid_index_bits + direction_bits),
+                "The low part of xi must fill the rest of the first word");
+  static_assert(compact_segment_id_xi_lo_bits > 0 and
+                    compact_segment_id_xi_hi_bits > 0 and
+                    compact_segment_id_xi_hi_bits +
+                            2 * (max_refinement_level + 1) ==
+                        32,
+                "The high part of xi, eta, and zeta must fill the second word");
 
   static constexpr size_t volume_dim = VolumeDim;
 
@@ -118,7 +141,8 @@ class alignas(int[2]) ElementId {  // NOLINT(modernize-avoid-c-arrays)
  private:
   uint16_t compact_segment_id_xi() const {
     return static_cast<uint16_t>(compact_segment_id_xi_lo_) |
-           (static_cast<uint16_t>(compact_segment_id_xi_hi_) << 13);
+           (static_cast<uint16_t>(compact_segment_id_xi_hi_)
+            << compact_segment_id_xi_lo_bits);
   }
   template <size_t Dim>
   // NOLINTNEXTLINE(readability-redundant-declaration)
@@ -140,9 +164,9 @@ class alignas(int[2]) ElementId {  // NOLINT(modernize-avoid-c-arrays)
   uint32_t block_id_ : block_id_bits;
   uint32_t grid_index_ : grid_index_bits;
   uint32_t direction_ : direction_bits;
-  uint32_t compact_segment_id_xi_lo_ : 13;  // 13 bits (Low part of Xi)
+  uint32_t compact_segment_id_xi_lo_ : compact_segment_id_xi_lo_bits;
   // Word 2 (32 bits)
-  uint32_t compact_segment_id_xi_hi_ : 2;  // 2 bits (High part of Xi)
+  uint32_t compact_segment_id_xi_hi_ : compact_segment_id_xi_hi_bits;
   uint32_t compact_segment_id_eta_ : max_refinement_level + 1;
   uint32_t compact_segment_id_zeta_ : max_refinement_level + 1;
 };
@@ -196,6 +220,12 @@ bool operator>=(const ElementId<VolumeDim>& lhs,
                 const ElementId<VolumeDim>& rhs) {
   return !(lhs < rhs);
 }
+
+/// \ingroup ComputationalDomainGroup
+/// Check if two elements overlap, i.e., they are in the same block
+/// and all their segments overlap.
+template <size_t VolumeDim>
+bool overlapping(const ElementId<VolumeDim>& a, const ElementId<VolumeDim>& b);
 
 /// @{
 /// \brief Returns a bool if the element is the zeroth element in the domain.

@@ -20,6 +20,7 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/StdHelpers.hpp"
 #include "Utilities/StdHelpers/Bit.hpp"
@@ -44,9 +45,10 @@ static_assert(sizeof(ElementId<3>) == 2 * sizeof(int),
               "Wrong size for ElementId<3>");
 
 // IMPLEMENTATION DETAILS:
-// We use a compact representation of a SegmentId as a uint16_t.
-// This allows 16 refinement levels from the coarsest level 0 thorugh 15
-// Labeling the 16 bits of the uint16_t from right (0) to left (15), the
+// We use a compact representation of a SegmentId as a uint16_t, of which only
+// the lowest `max_refinement_level + 1` = 15 bits are stored in the ElementId.
+// This allows 15 refinement levels from the coarsest level 0 through 14.
+// Labeling the bits of the uint16_t from right (0) to left (15), the
 // position of the bit of the leading 1 (also known as the most significant bit)
 // determines the refinement level of the SegmentId, while masking that bit
 // (i.e. setting it to zero) of the uint16_t will determine the index of the
@@ -60,7 +62,10 @@ static_assert(sizeof(ElementId<3>) == 2 * sizeof(int),
 // 0000000000000011 L1I1
 // 0000000000000100 L2I0
 // ...
-// 1111111111111111 L15I32767
+// 0111111111111111 L14I16383
+// The xi compact segment ID is stored split into its lowest
+// `compact_segment_id_xi_lo_bits` bits and the remaining high bits (see
+// ElementId.hpp).
 namespace {
 uint16_t make_compact_segment_id(const SegmentId& segment_id) {
   return (uint64_t{1} << segment_id.refinement_level()) +
@@ -108,8 +113,10 @@ ElementId<VolumeDim>::ElementId(const uint16_t block_id,
     : block_id_(block_id),
       grid_index_(grid_index),
       direction_(direction),
-      compact_segment_id_xi_lo_(compact_segment_id_xi & 0x1FFF),
-      compact_segment_id_xi_hi_(compact_segment_id_xi >> 13),
+      compact_segment_id_xi_lo_(compact_segment_id_xi &
+                                compact_segment_id_xi_lo_mask),
+      compact_segment_id_xi_hi_(compact_segment_id_xi >>
+                                compact_segment_id_xi_lo_bits),
       compact_segment_id_eta_(compact_segment_id_eta),
       compact_segment_id_zeta_(compact_segment_id_zeta) {}
 
@@ -118,8 +125,8 @@ ElementId<VolumeDim>::ElementId(const size_t block_id, const size_t grid_index)
     : block_id_(static_cast<uint16_t>(block_id)),
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<VolumeDim>::self().bits()),
-      compact_segment_id_xi_lo_(1),  // 1 & 0x1FFF is 1
-      compact_segment_id_xi_hi_(0),  // 1 >> 13 is 0
+      compact_segment_id_xi_lo_(1),  // Low part of compact ID 1 is 1
+      compact_segment_id_xi_hi_(0),  // High part of compact ID 1 is 0
       compact_segment_id_eta_(VolumeDim > 1 ? uint16_t{1} : uint16_t{0}),
       compact_segment_id_zeta_(VolumeDim > 2 ? uint16_t{1} : uint16_t{0}) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -138,8 +145,9 @@ ElementId<1>::ElementId(const size_t block_id,
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<3>::self().bits()),
       compact_segment_id_xi_lo_(make_compact_segment_id(segment_ids[0]) &
-                                0x1FFF),
-      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >> 13),
+                                compact_segment_id_xi_lo_mask),
+      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >>
+                                compact_segment_id_xi_lo_bits),
       compact_segment_id_eta_(uint16_t{0}),
       compact_segment_id_zeta_(uint16_t{0}) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -158,8 +166,9 @@ ElementId<2>::ElementId(const size_t block_id,
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<3>::self().bits()),
       compact_segment_id_xi_lo_(make_compact_segment_id(segment_ids[0]) &
-                                0x1FFF),
-      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >> 13),
+                                compact_segment_id_xi_lo_mask),
+      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >>
+                                compact_segment_id_xi_lo_bits),
       compact_segment_id_eta_(make_compact_segment_id(segment_ids[1])),
       compact_segment_id_zeta_(uint16_t{0}) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -178,8 +187,9 @@ ElementId<3>::ElementId(const size_t block_id,
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<3>::self().bits()),
       compact_segment_id_xi_lo_(make_compact_segment_id(segment_ids[0]) &
-                                0x1FFF),
-      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >> 13),
+                                compact_segment_id_xi_lo_mask),
+      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >>
+                                compact_segment_id_xi_lo_bits),
       compact_segment_id_eta_(make_compact_segment_id(segment_ids[1])),
       compact_segment_id_zeta_(make_compact_segment_id(segment_ids[2])) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -240,8 +250,8 @@ ElementId<VolumeDim>::ElementId(const std::string& grid_name)
 
   const uint64_t full_xi = make_compact_segment_id(
       to_size_t(match[2]), to_size_t(match[3]), grid_name);
-  compact_segment_id_xi_lo_ = full_xi & 0x1FFF;
-  compact_segment_id_xi_hi_ = full_xi >> 13;
+  compact_segment_id_xi_lo_ = full_xi & compact_segment_id_xi_lo_mask;
+  compact_segment_id_xi_hi_ = full_xi >> compact_segment_id_xi_lo_bits;
   if constexpr (VolumeDim > 1) {
     compact_segment_id_eta_ = make_compact_segment_id(
         to_size_t(match[4]), to_size_t(match[5]), grid_name);
@@ -280,8 +290,9 @@ ElementId<VolumeDim> ElementId<VolumeDim>::id_of_child(const size_t dim,
   ElementId<VolumeDim> result = this->without_direction();
   switch (dim) {
     case 0: {
-      uint64_t xi = result.compact_segment_id_xi_lo_ |
-                    (result.compact_segment_id_xi_hi_ << 13);
+      uint64_t xi =
+          result.compact_segment_id_xi_lo_ |
+          (result.compact_segment_id_xi_hi_ << compact_segment_id_xi_lo_bits);
 
       ASSERT(get_refinement_level(xi) != max_refinement_level,
              "Cannot get child of element on max refinement level");
@@ -293,8 +304,8 @@ ElementId<VolumeDim> ElementId<VolumeDim>::id_of_child(const size_t dim,
       }
 
       // Write back split values
-      result.compact_segment_id_xi_lo_ = xi & 0x1FFF;
-      result.compact_segment_id_xi_hi_ = xi >> 13;
+      result.compact_segment_id_xi_lo_ = xi & compact_segment_id_xi_lo_mask;
+      result.compact_segment_id_xi_hi_ = xi >> compact_segment_id_xi_lo_bits;
       return result;
     }
     case 1:
@@ -329,8 +340,9 @@ ElementId<VolumeDim> ElementId<VolumeDim>::id_of_parent(
   switch (dim) {
     case 0: {
       // Reconstruct Xi
-      uint64_t xi = result.compact_segment_id_xi_lo_ |
-                    (result.compact_segment_id_xi_hi_ << 13);
+      uint64_t xi =
+          result.compact_segment_id_xi_lo_ |
+          (result.compact_segment_id_xi_hi_ << compact_segment_id_xi_lo_bits);
 
       ASSERT(get_refinement_level(xi) != 0,
              "Cannot get parent of element on refinement level 0");
@@ -339,8 +351,8 @@ ElementId<VolumeDim> ElementId<VolumeDim>::id_of_parent(
       xi = xi >> 1;
 
       // Write back split values
-      result.compact_segment_id_xi_lo_ = xi & 0x1FFF;
-      result.compact_segment_id_xi_hi_ = xi >> 13;
+      result.compact_segment_id_xi_lo_ = xi & compact_segment_id_xi_lo_mask;
+      result.compact_segment_id_xi_hi_ = xi >> compact_segment_id_xi_lo_bits;
       return result;
     }
     case 1:
@@ -412,9 +424,11 @@ SegmentId ElementId<VolumeDim>::segment_id(const size_t dim) const {
 template <size_t VolumeDim>
 ElementId<VolumeDim> ElementId<VolumeDim>::external_boundary_id() {
   // In order to distinguish this from an uninitialized ElementId, we use the
-  // maximum possible value that can be stored in `block_id_bits`
-  static_assert(ElementId::block_id_bits == 11);
-  return ElementId{255, 0, 0, 0, 0, 0};
+  // maximum possible value that can be stored in `block_id_bits`, i.e.
+  // `2^block_id_bits - 1`. Its compact segment IDs are all 0 (undefined), so it
+  // never compares equal to the ID of an actual element in that block.
+  return ElementId{
+      static_cast<uint16_t>(two_to_the(block_id_bits) - 1), 0, 0, 0, 0, 0};
 }
 
 template <size_t VolumeDim>
@@ -481,6 +495,24 @@ bool operator<(const ElementId<VolumeDim>& lhs,
   return false;
 }
 
+template <size_t VolumeDim>
+bool overlapping(const ElementId<VolumeDim>& a, const ElementId<VolumeDim>& b) {
+  if (a == b) {
+    return true;
+  }
+  if (a.block_id() != b.block_id()) {
+    return false;
+  }
+  const auto segments_a = a.segment_ids();
+  const auto segments_b = b.segment_ids();
+  for (size_t d = 0; d < VolumeDim; ++d) {
+    if (not overlapping(gsl::at(segments_a, d), gsl::at(segments_b, d))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 template <size_t Dim>
 bool is_zeroth_element(const ElementId<Dim>& id,
                        const std::optional<size_t>& grid_index) {
@@ -536,6 +568,8 @@ size_t hash<ElementId<VolumeDim>>::operator()(
                                     const ElementId<GET_DIM(data)>&);       \
   template bool operator<(const ElementId<GET_DIM(data)>& lhs,              \
                           const ElementId<GET_DIM(data)>& rhs);             \
+  template bool overlapping(const ElementId<GET_DIM(data)>& a,              \
+                            const ElementId<GET_DIM(data)>& b);             \
   template bool is_zeroth_element(const ElementId<GET_DIM(data)>& id,       \
                                   const std::optional<size_t>& grid_index); \
   template bool is_zeroth_element(const ElementId<GET_DIM(data)>& id);      \
