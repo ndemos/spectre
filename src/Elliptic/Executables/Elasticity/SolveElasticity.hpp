@@ -71,10 +71,13 @@ struct Metavariables {
   using error_tags = db::wrap_tags_in<Tags::Error, analytic_solution_fields>;
   using observe_fields = tmpl::append<
       analytic_solution_fields, error_tags, typename solver::observe_fields,
-      tmpl::list<Elasticity::Tags::StrainCompute<volume_dim>,
-                 Elasticity::Tags::StressCompute<volume_dim>,
-                 Elasticity::Tags::PotentialEnergyDensityCompute<volume_dim>,
-                 domain::Tags::Coordinates<volume_dim, Frame::Inertial>>>;
+      tmpl::list<
+          Elasticity::Tags::StrainCompute<volume_dim>,
+          Elasticity::Tags::StressCompute<volume_dim>,
+          Elasticity::Tags::PotentialEnergyDensityCompute<volume_dim>,
+          Elasticity::Tags::BulkPotentialEnergyDensityCompute<volume_dim>,
+          Elasticity::Tags::ShearPotentialEnergyDensityCompute<volume_dim>,
+          domain::Tags::Coordinates<volume_dim, Frame::Inertial>>>;
   using observer_compute_tags =
       tmpl::list<::Events::Tags::ObserverMeshCompute<volume_dim>,
                  ::Events::Tags::ObserverDetInvJacobianCompute<

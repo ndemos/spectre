@@ -46,6 +46,16 @@ Scalar<DataVector> potential_energy_density(
     const tnsr::I<DataVector, Dim>& coordinates,
     const ConstitutiveRelations::ConstitutiveRelation<Dim>&
         constitutive_relation);
+
+template <size_t Dim>
+void bulk_potential_energy_density(gsl::not_null<Scalar<DataVector>*> result,
+                                   const tnsr::ii<DataVector, Dim>& strain,
+                                   const tnsr::II<DataVector, Dim>& stress);
+
+template <size_t Dim>
+void shear_potential_energy_density(gsl::not_null<Scalar<DataVector>*> result,
+                                    const tnsr::ii<DataVector, Dim>& strain,
+                                    const tnsr::II<DataVector, Dim>& stress);
 /// @}
 
 namespace Tags {
@@ -64,6 +74,32 @@ struct PotentialEnergyDensityCompute
   static constexpr auto function = static_cast<void (*)(
       gsl::not_null<Scalar<DataVector>*>, const tnsr::ii<DataVector, Dim>&,
       const tnsr::II<DataVector, Dim>&)>(&potential_energy_density<Dim>);
+};
+
+template <size_t Dim>
+struct BulkPotentialEnergyDensityCompute
+    : Elasticity::Tags::BulkPotentialEnergyDensity<Dim>,
+      db::ComputeTag {
+  using base = Elasticity::Tags::BulkPotentialEnergyDensity<Dim>;
+  using return_type = Scalar<DataVector>;
+  using argument_tags =
+      tmpl::list<Elasticity::Tags::Strain<Dim>, Elasticity::Tags::Stress<Dim>>;
+  static constexpr auto function = static_cast<void (*)(
+      gsl::not_null<Scalar<DataVector>*>, const tnsr::ii<DataVector, Dim>&,
+      const tnsr::II<DataVector, Dim>&)>(&bulk_potential_energy_density<Dim>);
+};
+
+template <size_t Dim>
+struct ShearPotentialEnergyDensityCompute
+    : Elasticity::Tags::ShearPotentialEnergyDensity<Dim>,
+      db::ComputeTag {
+  using base = Elasticity::Tags::ShearPotentialEnergyDensity<Dim>;
+  using return_type = Scalar<DataVector>;
+  using argument_tags =
+      tmpl::list<Elasticity::Tags::Strain<Dim>, Elasticity::Tags::Stress<Dim>>;
+  static constexpr auto function = static_cast<void (*)(
+      gsl::not_null<Scalar<DataVector>*>, const tnsr::ii<DataVector, Dim>&,
+      const tnsr::II<DataVector, Dim>&)>(&shear_potential_energy_density<Dim>);
 };
 
 }  // namespace Tags

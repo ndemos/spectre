@@ -84,5 +84,29 @@ struct PotentialEnergyDensity : db::SimpleTag {
   using type = Scalar<DataVector>;
 };
 
+/*!
+ * \brief The bulk (volumetric) part of the potential energy density
+ * \f$U_\mathrm{bulk}=-\frac{1}{2 \mathrm{Dim}} \Theta \Sigma\f$, where
+ * \f$\Theta = S_{ii}\f$ is the trace of the strain and
+ * \f$\Sigma = T^{ii}\f$ is the trace of the stress.
+ */
+template <size_t Dim>
+struct BulkPotentialEnergyDensity : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+
+/*!
+ * \brief The shear (deviatoric) part of the potential energy density
+ * \f$U_\mathrm{shear} = -\frac{1}{2} s^{ij} e_{ij}\f$, computed directly from
+ * the deviatoric strain \f$e_{ij} = S_{ij} - \frac{1}{\mathrm{Dim}} \delta_{ij}
+ * \Theta\f$ and deviatoric stress \f$s^{ij} = T^{ij} - \frac{1}{\mathrm{Dim}}
+ * \delta^{ij} \Sigma\f$, independently of the total, so that bulk + shear =
+ * total is a meaningful consistency check rather than an identity.
+ */
+template <size_t Dim>
+struct ShearPotentialEnergyDensity : db::SimpleTag {
+  using type = Scalar<DataVector>;
+};
+
 }  // namespace Tags
 }  // namespace Elasticity
