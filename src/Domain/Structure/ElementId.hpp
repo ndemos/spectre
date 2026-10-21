@@ -50,11 +50,11 @@ class alignas(int[2]) ElementId {  // NOLINT(modernize-avoid-c-arrays)
   //
   // Note: C++ populates bits from right to left in order of the
   // variables. This gives us the direction_mask we use below.
-  static constexpr size_t block_id_bits = 8;
+  static constexpr size_t block_id_bits = 11;
   static constexpr size_t grid_index_bits = 4;
   static constexpr size_t direction_bits = 4;
   /// The maximum allowed refinement level
-  static constexpr size_t max_refinement_level = 15;
+  static constexpr size_t max_refinement_level = 14;
   static constexpr uint64_t direction_shift =
       static_cast<uint64_t>(block_id_bits + grid_index_bits);
   static constexpr uint64_t direction_mask = static_cast<uint64_t>(0b1111)
@@ -116,6 +116,10 @@ class alignas(int[2]) ElementId {  // NOLINT(modernize-avoid-c-arrays)
   ElementId without_direction() const;
 
  private:
+  uint16_t compact_segment_id_xi() const {
+    return static_cast<uint16_t>(compact_segment_id_xi_lo_) |
+           (static_cast<uint16_t>(compact_segment_id_xi_hi_) << 13);
+  }
   template <size_t Dim>
   // NOLINTNEXTLINE(readability-redundant-declaration)
   friend bool operator==(const ElementId<Dim>& lhs, const ElementId<Dim>& rhs);
@@ -129,17 +133,18 @@ class alignas(int[2]) ElementId {  // NOLINT(modernize-avoid-c-arrays)
   friend bool is_zeroth_element(const ElementId<Dim>& id,
                                 const std::optional<size_t>& grid_index);
 
-  ElementId(uint8_t block_id, uint8_t grid_index, uint8_t direction,
+  ElementId(uint16_t block_id, uint8_t grid_index, uint8_t direction,
             uint16_t compact_segment_id_xi, uint16_t compact_segment_id_eta,
             uint16_t compact_segment_id_zeta);
-
-  uint8_t block_id_ : block_id_bits;
-  uint8_t grid_index_ : grid_index_bits;
-  uint8_t direction_ : direction_bits;  // end first 16 bits
-  // each of the following is 16 bits in length
-  uint16_t compact_segment_id_xi_ : max_refinement_level + 1;
-  uint16_t compact_segment_id_eta_ : max_refinement_level + 1;
-  uint16_t compact_segment_id_zeta_ : max_refinement_level + 1;
+  // Word 1 (32 bits)
+  uint32_t block_id_ : block_id_bits;
+  uint32_t grid_index_ : grid_index_bits;
+  uint32_t direction_ : direction_bits;
+  uint32_t compact_segment_id_xi_lo_ : 13;  // 13 bits (Low part of Xi)
+  // Word 2 (32 bits)
+  uint32_t compact_segment_id_xi_hi_ : 2;  // 2 bits (High part of Xi)
+  uint32_t compact_segment_id_eta_ : max_refinement_level + 1;
+  uint32_t compact_segment_id_zeta_ : max_refinement_level + 1;
 };
 
 /// \cond
@@ -191,12 +196,6 @@ bool operator>=(const ElementId<VolumeDim>& lhs,
                 const ElementId<VolumeDim>& rhs) {
   return !(lhs < rhs);
 }
-
-/// \ingroup ComputationalDomainGroup
-/// Check if two elements overlap, i.e., they are in the same block
-/// and all their segments overlap.
-template <size_t VolumeDim>
-bool overlapping(const ElementId<VolumeDim>& a, const ElementId<VolumeDim>& b);
 
 /// @{
 /// \brief Returns a bool if the element is the zeroth element in the domain.
@@ -259,7 +258,8 @@ inline bool operator==(const ElementId<VolumeDim>& lhs,
   // Note: Direction is intentionally skipped.
   return lhs.block_id_ == rhs.block_id_ and
          lhs.grid_index_ == rhs.grid_index_ and
-         lhs.compact_segment_id_xi_ == rhs.compact_segment_id_xi_ and
+         lhs.compact_segment_id_xi_lo_ == rhs.compact_segment_id_xi_lo_ and
+         lhs.compact_segment_id_xi_hi_ == rhs.compact_segment_id_xi_hi_ and
          lhs.compact_segment_id_eta_ == rhs.compact_segment_id_eta_ and
          lhs.compact_segment_id_zeta_ == rhs.compact_segment_id_zeta_;
 }

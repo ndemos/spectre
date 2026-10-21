@@ -20,7 +20,6 @@
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
-#include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/StdHelpers.hpp"
 #include "Utilities/StdHelpers/Bit.hpp"
@@ -64,7 +63,7 @@ static_assert(sizeof(ElementId<3>) == 2 * sizeof(int),
 // 1111111111111111 L15I32767
 namespace {
 uint16_t make_compact_segment_id(const SegmentId& segment_id) {
-  return (uint16_t{1} << segment_id.refinement_level()) +
+  return (uint64_t{1} << segment_id.refinement_level()) +
          static_cast<uint16_t>(segment_id.index());
 }
 
@@ -100,7 +99,7 @@ bool is_on_upper_block_boundary(const uint16_t compact_segment_id) {
 }  // namespace
 
 template <size_t VolumeDim>
-ElementId<VolumeDim>::ElementId(const uint8_t block_id,
+ElementId<VolumeDim>::ElementId(const uint16_t block_id,
                                 const uint8_t grid_index,
                                 const uint8_t direction,
                                 const uint16_t compact_segment_id_xi,
@@ -109,16 +108,18 @@ ElementId<VolumeDim>::ElementId(const uint8_t block_id,
     : block_id_(block_id),
       grid_index_(grid_index),
       direction_(direction),
-      compact_segment_id_xi_(compact_segment_id_xi),
+      compact_segment_id_xi_lo_(compact_segment_id_xi & 0x1FFF),
+      compact_segment_id_xi_hi_(compact_segment_id_xi >> 13),
       compact_segment_id_eta_(compact_segment_id_eta),
       compact_segment_id_zeta_(compact_segment_id_zeta) {}
 
 template <size_t VolumeDim>
 ElementId<VolumeDim>::ElementId(const size_t block_id, const size_t grid_index)
-    : block_id_(static_cast<uint8_t>(block_id)),
+    : block_id_(static_cast<uint16_t>(block_id)),
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<VolumeDim>::self().bits()),
-      compact_segment_id_xi_(uint16_t{1}),
+      compact_segment_id_xi_lo_(1),  // 1 & 0x1FFF is 1
+      compact_segment_id_xi_hi_(0),  // 1 >> 13 is 0
       compact_segment_id_eta_(VolumeDim > 1 ? uint16_t{1} : uint16_t{0}),
       compact_segment_id_zeta_(VolumeDim > 2 ? uint16_t{1} : uint16_t{0}) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -133,10 +134,12 @@ template <>
 ElementId<1>::ElementId(const size_t block_id,
                         const std::array<SegmentId, 1>& segment_ids,
                         const size_t grid_index)
-    : block_id_(static_cast<uint8_t>(block_id)),
+    : block_id_(static_cast<uint16_t>(block_id)),
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<3>::self().bits()),
-      compact_segment_id_xi_(make_compact_segment_id(segment_ids[0])),
+      compact_segment_id_xi_lo_(make_compact_segment_id(segment_ids[0]) &
+                                0x1FFF),
+      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >> 13),
       compact_segment_id_eta_(uint16_t{0}),
       compact_segment_id_zeta_(uint16_t{0}) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -151,10 +154,12 @@ template <>
 ElementId<2>::ElementId(const size_t block_id,
                         const std::array<SegmentId, 2>& segment_ids,
                         const size_t grid_index)
-    : block_id_(static_cast<uint8_t>(block_id)),
+    : block_id_(static_cast<uint16_t>(block_id)),
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<3>::self().bits()),
-      compact_segment_id_xi_(make_compact_segment_id(segment_ids[0])),
+      compact_segment_id_xi_lo_(make_compact_segment_id(segment_ids[0]) &
+                                0x1FFF),
+      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >> 13),
       compact_segment_id_eta_(make_compact_segment_id(segment_ids[1])),
       compact_segment_id_zeta_(uint16_t{0}) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -169,10 +174,12 @@ template <>
 ElementId<3>::ElementId(const size_t block_id,
                         const std::array<SegmentId, 3>& segment_ids,
                         const size_t grid_index)
-    : block_id_(static_cast<uint8_t>(block_id)),
+    : block_id_(static_cast<uint16_t>(block_id)),
       grid_index_(static_cast<uint8_t>(grid_index)),
       direction_(Direction<3>::self().bits()),
-      compact_segment_id_xi_(make_compact_segment_id(segment_ids[0])),
+      compact_segment_id_xi_lo_(make_compact_segment_id(segment_ids[0]) &
+                                0x1FFF),
+      compact_segment_id_xi_hi_(make_compact_segment_id(segment_ids[0]) >> 13),
       compact_segment_id_eta_(make_compact_segment_id(segment_ids[1])),
       compact_segment_id_zeta_(make_compact_segment_id(segment_ids[2])) {
   ASSERT(block_id < two_to_the(block_id_bits),
@@ -189,7 +196,8 @@ ElementId<VolumeDim>::ElementId(const Direction<VolumeDim>& direction,
     : block_id_(element_id.block_id_),
       grid_index_(element_id.grid_index_),
       direction_(direction.bits()),
-      compact_segment_id_xi_(element_id.compact_segment_id_xi_),
+      compact_segment_id_xi_lo_(element_id.compact_segment_id_xi_lo_),
+      compact_segment_id_xi_hi_(element_id.compact_segment_id_xi_hi_),
       compact_segment_id_eta_(element_id.compact_segment_id_eta_),
       compact_segment_id_zeta_(element_id.compact_segment_id_zeta_) {}
 
@@ -227,11 +235,13 @@ ElementId<VolumeDim>::ElementId(const std::string& grid_name)
            "Index '" << index << "' out of bounds for element ID '" << name
                      << "'. Maximum value is: "
                      << two_to_the(refinement_level) - 1);
-    return (uint16_t{1} << refinement_level) + static_cast<uint16_t>(index);
+    return (uint64_t{1} << refinement_level) + static_cast<uint64_t>(index);
   };
 
-  compact_segment_id_xi_ = make_compact_segment_id(
+  const uint64_t full_xi = make_compact_segment_id(
       to_size_t(match[2]), to_size_t(match[3]), grid_name);
+  compact_segment_id_xi_lo_ = full_xi & 0x1FFF;
+  compact_segment_id_xi_hi_ = full_xi >> 13;
   if constexpr (VolumeDim > 1) {
     compact_segment_id_eta_ = make_compact_segment_id(
         to_size_t(match[4]), to_size_t(match[5]), grid_name);
@@ -269,15 +279,24 @@ ElementId<VolumeDim> ElementId<VolumeDim>::id_of_child(const size_t dim,
          "Dimension must be smaller than " << VolumeDim << ", but is: " << dim);
   ElementId<VolumeDim> result = this->without_direction();
   switch (dim) {
-    case 0:
-      ASSERT(get_refinement_level(result.compact_segment_id_xi_) !=
-                 max_refinement_level,
+    case 0: {
+      uint64_t xi = result.compact_segment_id_xi_lo_ |
+                    (result.compact_segment_id_xi_hi_ << 13);
+
+      ASSERT(get_refinement_level(xi) != max_refinement_level,
              "Cannot get child of element on max refinement level");
-      result.compact_segment_id_xi_ = result.compact_segment_id_xi_ << 1;
+
+      // Perform logic
+      xi = xi << 1;
       if (side == Side::Upper) {
-        ++result.compact_segment_id_xi_;
+        ++xi;
       }
+
+      // Write back split values
+      result.compact_segment_id_xi_lo_ = xi & 0x1FFF;
+      result.compact_segment_id_xi_hi_ = xi >> 13;
       return result;
+    }
     case 1:
       ASSERT(get_refinement_level(result.compact_segment_id_eta_) !=
                  max_refinement_level,
@@ -308,18 +327,29 @@ ElementId<VolumeDim> ElementId<VolumeDim>::id_of_parent(
          "Dimension must be smaller than " << VolumeDim << ", but is: " << dim);
   ElementId<VolumeDim> result = this->without_direction();
   switch (dim) {
-    case 0:
-      ASSERT(get_refinement_level(result.compact_segment_id_xi_) != 0,
+    case 0: {
+      // Reconstruct Xi
+      uint64_t xi = result.compact_segment_id_xi_lo_ |
+                    (result.compact_segment_id_xi_hi_ << 13);
+
+      ASSERT(get_refinement_level(xi) != 0,
              "Cannot get parent of element on refinement level 0");
-      result.compact_segment_id_xi_ = result.compact_segment_id_xi_ >> 1;
+
+      // Perform logic
+      xi = xi >> 1;
+
+      // Write back split values
+      result.compact_segment_id_xi_lo_ = xi & 0x1FFF;
+      result.compact_segment_id_xi_hi_ = xi >> 13;
       return result;
+    }
     case 1:
-      ASSERT(get_refinement_level(result.compact_segment_id_xi_) != 0,
+      ASSERT(get_refinement_level(result.compact_segment_id_eta_) != 0,
              "Cannot get parent of element on refinement level 0");
       result.compact_segment_id_eta_ = result.compact_segment_id_eta_ >> 1;
       return result;
     case 2:
-      ASSERT(get_refinement_level(result.compact_segment_id_xi_) != 0,
+      ASSERT(get_refinement_level(result.compact_segment_id_zeta_) != 0,
              "Cannot get parent of element on refinement level 0");
       result.compact_segment_id_zeta_ = result.compact_segment_id_zeta_ >> 1;
       return result;
@@ -338,12 +368,12 @@ Direction<VolumeDim> ElementId<VolumeDim>::direction() const {
 template <size_t VolumeDim>
 std::array<size_t, VolumeDim> ElementId<VolumeDim>::refinement_levels() const {
   if constexpr (VolumeDim == 1) {
-    return {{get_refinement_level(compact_segment_id_xi_)}};
+    return {{get_refinement_level(compact_segment_id_xi())}};
   } else if constexpr (VolumeDim == 2) {
-    return {{get_refinement_level(compact_segment_id_xi_),
+    return {{get_refinement_level(compact_segment_id_xi()),
              get_refinement_level(compact_segment_id_eta_)}};
   } else if constexpr (VolumeDim == 3) {
-    return {{get_refinement_level(compact_segment_id_xi_),
+    return {{get_refinement_level(compact_segment_id_xi()),
              get_refinement_level(compact_segment_id_eta_),
              get_refinement_level(compact_segment_id_zeta_)}};
   }
@@ -352,12 +382,12 @@ std::array<size_t, VolumeDim> ElementId<VolumeDim>::refinement_levels() const {
 template <size_t VolumeDim>
 std::array<SegmentId, VolumeDim> ElementId<VolumeDim>::segment_ids() const {
   if constexpr (VolumeDim == 1) {
-    return {{make_segment_id(compact_segment_id_xi_)}};
+    return {{make_segment_id(compact_segment_id_xi())}};
   } else if constexpr (VolumeDim == 2) {
-    return {{make_segment_id(compact_segment_id_xi_),
+    return {{make_segment_id(compact_segment_id_xi()),
              make_segment_id(compact_segment_id_eta_)}};
   } else if constexpr (VolumeDim == 3) {
-    return {{make_segment_id(compact_segment_id_xi_),
+    return {{make_segment_id(compact_segment_id_xi()),
              make_segment_id(compact_segment_id_eta_),
              make_segment_id(compact_segment_id_zeta_)}};
   }
@@ -369,7 +399,7 @@ SegmentId ElementId<VolumeDim>::segment_id(const size_t dim) const {
          "Dimension must be smaller than " << VolumeDim << ", but is: " << dim);
   switch (dim) {
     case 0:
-      return make_segment_id(compact_segment_id_xi_);
+      return make_segment_id(compact_segment_id_xi());
     case 1:
       return make_segment_id(compact_segment_id_eta_);
     case 2:
@@ -383,7 +413,7 @@ template <size_t VolumeDim>
 ElementId<VolumeDim> ElementId<VolumeDim>::external_boundary_id() {
   // In order to distinguish this from an uninitialized ElementId, we use the
   // maximum possible value that can be stored in `block_id_bits`
-  static_assert(ElementId::block_id_bits == 8);
+  static_assert(ElementId::block_id_bits == 11);
   return ElementId{255, 0, 0, 0, 0, 0};
 }
 
@@ -396,8 +426,8 @@ ElementId<VolumeDim> ElementId<VolumeDim>::without_direction() const {
 
 template <size_t VolumeDim>
 size_t ElementId<VolumeDim>::number_of_block_boundaries() const {
-  return (is_on_lower_block_boundary(compact_segment_id_xi_) ? 1_st : 0_st) +
-         (is_on_upper_block_boundary(compact_segment_id_xi_) ? 1_st : 0_st) +
+  return (is_on_lower_block_boundary(compact_segment_id_xi()) ? 1_st : 0_st) +
+         (is_on_upper_block_boundary(compact_segment_id_xi()) ? 1_st : 0_st) +
          (VolumeDim > 1
               ? (is_on_lower_block_boundary(compact_segment_id_eta_) ? 1_st
                                                                      : 0_st) +
@@ -432,8 +462,11 @@ bool operator<(const ElementId<VolumeDim>& lhs,
   if (lhs.block_id_ != rhs.block_id_) {
     return lhs.block_id_ < rhs.block_id_;
   }
-  if (lhs.compact_segment_id_xi_ != rhs.compact_segment_id_xi_) {
-    return lhs.compact_segment_id_xi_ < rhs.compact_segment_id_xi_;
+  if (lhs.compact_segment_id_xi_hi_ != rhs.compact_segment_id_xi_hi_) {
+    return lhs.compact_segment_id_xi_hi_ < rhs.compact_segment_id_xi_hi_;
+  }
+  if (lhs.compact_segment_id_xi_lo_ != rhs.compact_segment_id_xi_lo_) {
+    return lhs.compact_segment_id_xi_lo_ < rhs.compact_segment_id_xi_lo_;
   }
   if constexpr (VolumeDim > 1) {
     if (lhs.compact_segment_id_eta_ != rhs.compact_segment_id_eta_) {
@@ -448,31 +481,13 @@ bool operator<(const ElementId<VolumeDim>& lhs,
   return false;
 }
 
-template <size_t VolumeDim>
-bool overlapping(const ElementId<VolumeDim>& a, const ElementId<VolumeDim>& b) {
-  if (a == b) {
-    return true;
-  }
-  if (a.block_id() != b.block_id()) {
-    return false;
-  }
-  const auto segments_a = a.segment_ids();
-  const auto segments_b = b.segment_ids();
-  for (size_t d = 0; d < VolumeDim; ++d) {
-    if (not overlapping(gsl::at(segments_a, d), gsl::at(segments_b, d))) {
-      return false;
-    }
-  }
-  return true;
-}
-
 template <size_t Dim>
 bool is_zeroth_element(const ElementId<Dim>& id,
                        const std::optional<size_t>& grid_index) {
   if (id.block_id_ != 0) {
     return false;
   }
-  if (not is_on_lower_block_boundary(id.compact_segment_id_xi_)) {
+  if (not is_on_lower_block_boundary(id.compact_segment_id_xi())) {
     return false;
   }
   if (Dim > 1 and not is_on_lower_block_boundary(id.compact_segment_id_eta_)) {
@@ -521,8 +536,6 @@ size_t hash<ElementId<VolumeDim>>::operator()(
                                     const ElementId<GET_DIM(data)>&);       \
   template bool operator<(const ElementId<GET_DIM(data)>& lhs,              \
                           const ElementId<GET_DIM(data)>& rhs);             \
-  template bool overlapping(const ElementId<GET_DIM(data)>& a,              \
-                            const ElementId<GET_DIM(data)>& b);             \
   template bool is_zeroth_element(const ElementId<GET_DIM(data)>& id,       \
                                   const std::optional<size_t>& grid_index); \
   template bool is_zeroth_element(const ElementId<GET_DIM(data)>& id);      \
