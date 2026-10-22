@@ -89,6 +89,12 @@ struct PotentialEnergyDensity : db::SimpleTag {
  * \f$U_\mathrm{bulk}=-\frac{1}{2 \mathrm{Dim}} \Theta \Sigma\f$, where
  * \f$\Theta = S_{ii}\f$ is the trace of the strain and
  * \f$\Sigma = T^{ii}\f$ is the trace of the stress.
+ *
+ * The traces run over the Dim dimensions of the domain. Only for Dim = 3 is
+ * this the physical volumetric/deviatoric split. In 2D (plane stress) the
+ * out-of-plane strain \f$S_{zz}\f$ is nonzero but not included, so the split
+ * is only the 2D trace decomposition; the elasticity executable therefore
+ * observes these tags only in 3D.
  */
 template <size_t Dim>
 struct BulkPotentialEnergyDensity : db::SimpleTag {
@@ -100,8 +106,11 @@ struct BulkPotentialEnergyDensity : db::SimpleTag {
  * \f$U_\mathrm{shear} = -\frac{1}{2} s^{ij} e_{ij}\f$, computed directly from
  * the deviatoric strain \f$e_{ij} = S_{ij} - \frac{1}{\mathrm{Dim}} \delta_{ij}
  * \Theta\f$ and deviatoric stress \f$s^{ij} = T^{ij} - \frac{1}{\mathrm{Dim}}
- * \delta^{ij} \Sigma\f$, independently of the total, so that bulk + shear =
- * total is a meaningful consistency check rather than an identity.
+ * \delta^{ij} \Sigma\f$. Bulk + shear = total is an algebraic identity for any
+ * symmetric strain and stress. The shear part is computed independently of
+ * the total (not as total minus bulk), so checking the identity numerically
+ * tests the implementation. See `BulkPotentialEnergyDensity` for the meaning
+ * in 2D.
  */
 template <size_t Dim>
 struct ShearPotentialEnergyDensity : db::SimpleTag {

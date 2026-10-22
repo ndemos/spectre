@@ -10,6 +10,7 @@
 #include <pup.h>
 
 #include "DataStructures/Tensor/TypeAliases.hpp"
+#include "Options/Context.hpp"
 #include "Options/String.hpp"
 #include "PointwiseFunctions/Elasticity/ConstitutiveRelations/ConstitutiveRelation.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
@@ -80,8 +81,11 @@ class AnisotropicHomogeneous : public ConstitutiveRelation<3> {
   AnisotropicHomogeneous& operator=(AnisotropicHomogeneous&&) = default;
   ~AnisotropicHomogeneous() override = default;
 
+  /// The stiffness matrix must be symmetric and positive definite, which is
+  /// checked in all build types (not only in Debug builds).
   explicit AnisotropicHomogeneous(
-      std::array<std::array<double, 6>, 6> stiffness);
+      std::array<std::array<double, 6>, 6> stiffness,
+      const Options::Context& context = {});
 
   std::unique_ptr<ConstitutiveRelation<3>> get_clone() const override;
 

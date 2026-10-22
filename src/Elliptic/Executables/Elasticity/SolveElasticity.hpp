@@ -69,15 +69,22 @@ struct Metavariables {
   using analytic_solution_fields = typename system::primal_fields;
   using error_compute = ::Tags::ErrorsCompute<analytic_solution_fields>;
   using error_tags = db::wrap_tags_in<Tags::Error, analytic_solution_fields>;
+  // The bulk/shear split uses the Dim-dimensional trace, which is the physical
+  // volumetric/deviatoric decomposition only in 3D (in 2D plane stress the
+  // out-of-plane strain S_zz is nonzero but not part of the 2D strain).
+  using bulk_shear_fields = tmpl::conditional_t<
+      Dim == 3,
+      tmpl::list<
+          Elasticity::Tags::BulkPotentialEnergyDensityCompute<volume_dim>,
+          Elasticity::Tags::ShearPotentialEnergyDensityCompute<volume_dim>>,
+      tmpl::list<>>;
   using observe_fields = tmpl::append<
       analytic_solution_fields, error_tags, typename solver::observe_fields,
-      tmpl::list<
-          Elasticity::Tags::StrainCompute<volume_dim>,
-          Elasticity::Tags::StressCompute<volume_dim>,
-          Elasticity::Tags::PotentialEnergyDensityCompute<volume_dim>,
-          Elasticity::Tags::BulkPotentialEnergyDensityCompute<volume_dim>,
-          Elasticity::Tags::ShearPotentialEnergyDensityCompute<volume_dim>,
-          domain::Tags::Coordinates<volume_dim, Frame::Inertial>>>;
+      tmpl::list<Elasticity::Tags::StrainCompute<volume_dim>,
+                 Elasticity::Tags::StressCompute<volume_dim>,
+                 Elasticity::Tags::PotentialEnergyDensityCompute<volume_dim>>,
+      bulk_shear_fields,
+      tmpl::list<domain::Tags::Coordinates<volume_dim, Frame::Inertial>>>;
   using observer_compute_tags =
       tmpl::list<::Events::Tags::ObserverMeshCompute<volume_dim>,
                  ::Events::Tags::ObserverDetInvJacobianCompute<

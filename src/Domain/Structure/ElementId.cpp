@@ -156,6 +156,12 @@ ElementId<1>::ElementId(const size_t block_id,
   ASSERT(grid_index < two_to_the(grid_index_bits),
          "Grid index out of bounds: " << grid_index << "\nMaximum value is: "
                                       << two_to_the(grid_index_bits) - 1);
+  for (const auto& segment_id : segment_ids) {
+    ASSERT(segment_id.refinement_level() <= max_refinement_level,
+           "Refinement level out of bounds: " << segment_id.refinement_level()
+                                              << "\nMaximum value is: "
+                                              << max_refinement_level);
+  }
 }
 
 template <>
@@ -177,6 +183,12 @@ ElementId<2>::ElementId(const size_t block_id,
   ASSERT(grid_index < two_to_the(grid_index_bits),
          "Grid index out of bounds: " << grid_index << "\nMaximum value is: "
                                       << two_to_the(grid_index_bits) - 1);
+  for (const auto& segment_id : segment_ids) {
+    ASSERT(segment_id.refinement_level() <= max_refinement_level,
+           "Refinement level out of bounds: " << segment_id.refinement_level()
+                                              << "\nMaximum value is: "
+                                              << max_refinement_level);
+  }
 }
 
 template <>
@@ -198,6 +210,12 @@ ElementId<3>::ElementId(const size_t block_id,
   ASSERT(grid_index < two_to_the(grid_index_bits),
          "Grid index out of bounds: " << grid_index << "\nMaximum value is: "
                                       << two_to_the(grid_index_bits) - 1);
+  for (const auto& segment_id : segment_ids) {
+    ASSERT(segment_id.refinement_level() <= max_refinement_level,
+           "Refinement level out of bounds: " << segment_id.refinement_level()
+                                              << "\nMaximum value is: "
+                                              << max_refinement_level);
+  }
 }
 
 template <size_t VolumeDim>

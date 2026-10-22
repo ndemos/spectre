@@ -52,9 +52,14 @@ void LaserBeam::apply(
     const tnsr::I<DataVector, 3>& x,
     const tnsr::i<DataVector, 3>& face_normal) const {
 #ifdef SPECTRE_DEBUG
-  ASSERT(get<2>(face_normal)[0] ==
-             get<2>(face_normal)[face_normal.begin()->size() - 1],
-         "LaserBeam currently assumes a flat surface (constant normal).");
+  // The (u, v) basis below is chosen from the normal at the first point, so
+  // the normal must be the same at all points (up to roundoff).
+  for (size_t d = 0; d < 3; ++d) {
+    ASSERT(max(abs(face_normal.get(d) - face_normal.get(d)[0])) < 1.e-12,
+           "LaserBeam assumes a flat surface (constant normal), but "
+           "component "
+               << d << " of the face normal varies across the face.");
+  }
 #endif
 
   // 1. Calculate vector r
@@ -107,24 +112,26 @@ void LaserBeam::apply(
       r_vec_0 * v_vec_0 + r_vec_1 * v_vec_1 + r_vec_2 * v_vec_2;
 
   // 4. Sum Intensities (Incoherent Summation)
-  // Scaling factor for Hermite polynomials: sqrt(2)*r/w
-  const double sqrt2_over_w = sqrt(2.0) / beam_width_;
+  // The beam width is r_0, the 1/e intensity radius (w = sqrt(2) r_0 is the
+  // 1/e^2 intensity radius). The Hermite argument sqrt(2) u / w = u / r_0.
+  const double one_over_r0 = 1.0 / beam_width_;
 
   // Accumulator for the final intensity profile (P_total)
   DataVector summed_intensity = make_with_value<DataVector>(coord_u, 0.0);
 
   for (const auto& mode : modes_) {
-    const DataVector H_n = hermite_polynomial(mode.n, coord_u * sqrt2_over_w);
-    const DataVector H_m = hermite_polynomial(mode.m, coord_v * sqrt2_over_w);
+    const DataVector H_n = hermite_polynomial(mode.n, coord_u * one_over_r0);
+    const DataVector H_m = hermite_polynomial(mode.m, coord_v * one_over_r0);
 
     // Calculate the "Shape" of the intensity for this mode: (H_n * H_m)^2
     // We square it immediately because we are adding Intensities, not Fields.
     DataVector mode_shape = square(H_n * H_m);
 
-    // Calculate Normalization Integral for this specific mode (n, m)
-    // Integral[ (H_n * H_m * exp(-r^2/w^2))^2 dA ] = (pi*w^2/2) * 2^(n+m) * n!
-    // * m!
-    double normalization_const = (M_PI * square(beam_width_) / 2.0) *
+    // Normalization integral for this mode (n, m), so that each mode with
+    // unit weight exerts unit total force:
+    // Integral[ (H_n(u/r_0) H_m(v/r_0))^2 exp(-r^2/r_0^2) dA ]
+    //   = pi r_0^2 2^(n+m) n! m!
+    double normalization_const = M_PI * square(beam_width_) *
                                  pow(2.0, mode.n + mode.m) * factorial(mode.n) *
                                  factorial(mode.m);
 
@@ -135,11 +142,11 @@ void LaserBeam::apply(
   }
 
   // 5. Apply Gaussian Envelope
-  // The term exp(-2r^2/w^2) is common to all Hermite-Gaussian intensities
+  // The term exp(-r^2/r_0^2) is common to all Hermite-Gaussian intensities
   // and was factored out of the integration constant above.
   const DataVector beam_profile =
       summed_intensity *
-      exp(-2.0 * (square(coord_u) + square(coord_v)) / square(beam_width_));
+      exp(-(square(coord_u) + square(coord_v)) / square(beam_width_));
 
   get<0>(*n_dot_minus_stress) = -beam_profile * get<0>(face_normal);
   get<1>(*n_dot_minus_stress) = -beam_profile * get<1>(face_normal);

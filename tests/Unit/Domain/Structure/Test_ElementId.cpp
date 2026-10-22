@@ -414,5 +414,17 @@ SPECTRE_TEST_CASE("Unit.Domain.Structure.ElementId", "[Domain][Unit]") {
   CHECK_THROWS_WITH(
       ElementId<1>(0, {{{0, 0}}}, two_to_the(ElementId<1>::grid_index_bits)),
       Catch::Matchers::ContainsSubstring("Grid index out of bounds"));
+  // A refinement level beyond the maximum would be silently truncated by the
+  // compact segment ID bitfields, so it must be rejected in every dimension.
+  const size_t too_fine = ElementId<3>::max_refinement_level + 1;
+  CHECK_THROWS_WITH(
+      ElementId<1>(0, {{{too_fine, 0}}}, 0),
+      Catch::Matchers::ContainsSubstring("Refinement level out of bounds"));
+  CHECK_THROWS_WITH(
+      ElementId<2>(0, {{{0, 0}, {too_fine, 0}}}, 0),
+      Catch::Matchers::ContainsSubstring("Refinement level out of bounds"));
+  CHECK_THROWS_WITH(
+      ElementId<3>(0, {{{0, 0}, {0, 0}, {too_fine, 0}}}, 0),
+      Catch::Matchers::ContainsSubstring("Refinement level out of bounds"));
 #endif
 }

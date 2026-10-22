@@ -4,13 +4,17 @@
 #include "PointwiseFunctions/Elasticity/ConstitutiveRelations/AnisotropicHomogeneous.hpp"
 
 #include <array>
+#include <blaze/math/DynamicMatrix.h>
+#include <blaze/math/DynamicVector.h>
+#include <blaze/math/SymmetricMatrix.h>
 #include <cstddef>
 #include <memory>
 #include <pup.h>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
-#include "Utilities/ErrorHandling/Assert.hpp"
+#include "Options/Context.hpp"
+#include "Options/ParseError.hpp"
 #include "Utilities/MakeWithValue.hpp"
 
 namespace Elasticity::ConstitutiveRelations {
@@ -48,15 +52,38 @@ inline void voigt_to_stress(
 }  // namespace
 
 AnisotropicHomogeneous::AnisotropicHomogeneous(
-    std::array<std::array<double, 6>, 6> stiffness)
+    std::array<std::array<double, 6>, 6> stiffness,
+    const Options::Context& context)
     : stiffness_(std::move(stiffness)) {
   for (size_t i = 0; i < 6; ++i) {
-    for (size_t j = 0; j < 6; ++j) {
-      ASSERT(stiffness_[i][j] == stiffness_[j][i],
-             "StiffnessMatrix must be symmetric in Voigt notation, but "
-                 << "C[" << i << "][" << j << "]=" << stiffness_[i][j]
-                 << " and C[" << j << "][" << i << "]=" << stiffness_[j][i]);
+    for (size_t j = i + 1; j < 6; ++j) {
+      if (stiffness_[i][j] != stiffness_[j][i]) {
+        PARSE_ERROR(context,
+                    "StiffnessMatrix must be symmetric in Voigt notation, but "
+                        << "C[" << i << "][" << j << "]=" << stiffness_[i][j]
+                        << " and C[" << j << "][" << i
+                        << "]=" << stiffness_[j][i]);
+      }
     }
+  }
+  // The strain energy density e^T C e / 2 must be positive for every nonzero
+  // strain, i.e. all eigenvalues of the symmetric Voigt matrix C must be
+  // positive.
+  blaze::SymmetricMatrix<blaze::DynamicMatrix<double>> voigt_matrix(6);
+  for (size_t i = 0; i < 6; ++i) {
+    for (size_t j = i; j < 6; ++j) {
+      voigt_matrix(i, j) = stiffness_[i][j];
+    }
+  }
+  blaze::DynamicVector<double> eigenvalues(6);
+  blaze::eigen(voigt_matrix, eigenvalues);
+  if (not(blaze::min(eigenvalues) > 0.)) {
+    PARSE_ERROR(context,
+                "StiffnessMatrix must be positive definite, but its smallest "
+                "eigenvalue is "
+                    << blaze::min(eigenvalues)
+                    << ". The material would be unstable (non-positive "
+                       "strain energy for some strain).");
   }
 }
 
