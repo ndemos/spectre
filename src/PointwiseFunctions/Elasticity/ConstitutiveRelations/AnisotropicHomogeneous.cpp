@@ -7,6 +7,7 @@
 #include <blaze/math/DynamicMatrix.h>
 #include <blaze/math/DynamicVector.h>
 #include <blaze/math/SymmetricMatrix.h>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <pup.h>
@@ -55,6 +56,18 @@ AnisotropicHomogeneous::AnisotropicHomogeneous(
     std::array<std::array<double, 6>, 6> stiffness,
     const Options::Context& context)
     : stiffness_(std::move(stiffness)) {
+  // Non-finite entries would make the eigenvalue computation below
+  // meaningless (or fail inside LAPACK), so reject them first.
+  for (size_t i = 0; i < 6; ++i) {
+    for (size_t j = 0; j < 6; ++j) {
+      if (not std::isfinite(stiffness_[i][j])) {
+        PARSE_ERROR(context,
+                    "StiffnessMatrix entries must be finite, "
+                    "but C["
+                        << i << "][" << j << "]=" << stiffness_[i][j]);
+      }
+    }
+  }
   for (size_t i = 0; i < 6; ++i) {
     for (size_t j = i + 1; j < 6; ++j) {
       if (stiffness_[i][j] != stiffness_[j][i]) {
@@ -70,7 +83,9 @@ AnisotropicHomogeneous::AnisotropicHomogeneous(
   // strain, i.e. all eigenvalues of the symmetric Voigt matrix C must be
   // positive. The threshold is relative to the largest eigenvalue so that it
   // is independent of the units of C and so that numerically singular
-  // matrices are rejected deterministically. `not (x > y)` also rejects NaN.
+  // matrices are rejected deterministically. A non-positive eigenvalue
+  // means the material is unstable; a positive eigenvalue below the
+  // threshold means the matrix is numerically too ill-conditioned.
   blaze::SymmetricMatrix<blaze::DynamicMatrix<double>> voigt_matrix(6);
   for (size_t i = 0; i < 6; ++i) {
     for (size_t j = i; j < 6; ++j) {
@@ -81,15 +96,21 @@ AnisotropicHomogeneous::AnisotropicHomogeneous(
   blaze::eigen(voigt_matrix, eigenvalues);
   const double min_eigenvalue = blaze::min(eigenvalues);
   const double max_eigenvalue = blaze::max(eigenvalues);
-  if (not(min_eigenvalue > min_relative_eigenvalue * max_eigenvalue)) {
+  if (min_eigenvalue <= 0.) {
     PARSE_ERROR(context,
                 "StiffnessMatrix must be positive definite, but its smallest "
                 "eigenvalue is "
-                    << min_eigenvalue << ", which is not above "
-                    << min_relative_eigenvalue
-                    << " times its largest eigenvalue " << max_eigenvalue
-                    << ". The material would be unstable (non-positive "
+                    << min_eigenvalue << " (largest: " << max_eigenvalue
+                    << "). The material would be unstable (non-positive "
                        "strain energy for some strain).");
+  }
+  if (not(min_eigenvalue > min_relative_eigenvalue * max_eigenvalue)) {
+    PARSE_ERROR(
+        context,
+        "StiffnessMatrix is positive definite but too "
+        "ill-conditioned to be accepted: its smallest eigenvalue "
+            << min_eigenvalue << " is not above " << min_relative_eigenvalue
+            << " times its largest eigenvalue " << max_eigenvalue << ".");
   }
 }
 

@@ -212,6 +212,19 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
     const auto pressure_reordered =
         pressure_on_z_surface(laser_beam_reordered, x_reorder);
     CHECK_ITERABLE_APPROX(pressure_repeated, pressure_reordered);
+    // Analytic reference at (x, y) = (1, 0.5) on the z = const surface,
+    // where u = x and v = -y (H_m^2 is even): with r0 = 2 the arguments
+    // are u / r0 = 0.5 and v / r0 = 0.25, H_2(0.5) = -1, H_2(0.25) = -1.75,
+    // and each TEM20/TEM02 mode is normalized by pi r0^2 2^2 2! = 8 pi r0^2.
+    // The bracket is -1 + 2 * 3.0625 = 5.125; an evaluator that discarded
+    // the duplicate would give 2.0625 instead.
+    tnsr::I<DataVector, 3> x_point{size_t{1}, 0.};
+    get<0>(x_point) = DataVector{1.};
+    get<1>(x_point) = DataVector{0.5};
+    const double pressure_point_expected =
+        std::exp(-1.25 / 4.) / (4. * M_PI) * 5.125 / 8.;
+    CHECK(pressure_on_z_surface(laser_beam_repeated, x_point)[0] ==
+          approx(pressure_point_expected));
     test_serialization(laser_beam_repeated);
   }
   {
@@ -278,6 +291,18 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
     CHECK(dynamic_cast<const LaserBeam&>(*created_zero_weight).modes() ==
           std::vector<LaserBeam::ModeInfo>{{0, 0, 0.}});
     CHECK(LaserBeam(2., {{0, 2, 1.}, {2, 0, -1.}}).modes().size() == 2);
+    // The same mode twice with opposite weights is also valid and cancels
+    // pointwise, so the pressure is zero (the TEM02 - TEM20 pair above only
+    // has zero net force)
+    const LaserBeam laser_beam_cancelling{2., {{0, 2, 1.}, {0, 2, -1.}}};
+    CHECK(laser_beam_cancelling.modes().size() == 2);
+    tnsr::I<DataVector, 3> x_cancel{size_t{3}, 0.};
+    get<0>(x_cancel) = DataVector{0., 1., -2.5};
+    get<1>(x_cancel) = DataVector{0., 0.5, 1.5};
+    const DataVector pressure_cancelling =
+        pressure_on_z_surface(laser_beam_cancelling, x_cancel);
+    const DataVector zero{3, 0.};
+    CHECK_ITERABLE_APPROX(pressure_cancelling, zero);
   }
 
   // Test applying the boundary conditions. The bounds are for x, the polar

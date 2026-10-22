@@ -53,7 +53,10 @@ namespace Elasticity::ConstitutiveRelations {
  * positive-definiteness check is relative: the smallest eigenvalue of \f$C\f$
  * must exceed `min_relative_eigenvalue` times its largest eigenvalue, so the
  * check does not depend on the units of \f$C\f$ and numerically singular
- * matrices are rejected deterministically. Both checks run in all build types.
+ * matrices are rejected deterministically. A matrix with a non-positive
+ * eigenvalue is reported as unstable; a positive definite matrix below the
+ * ratio is reported as too ill-conditioned. All entries must be finite.
+ * All checks run in all build types.
  */
 class AnisotropicHomogeneous : public ConstitutiveRelation<3> {
  public:

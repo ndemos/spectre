@@ -4,7 +4,9 @@
 #include "Framework/TestingFramework.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <random>
 #include <utility>
 
@@ -30,6 +32,18 @@ std::array<std::array<double, 6>, 6> cubic_voigt_matrix(const double c_11,
            {0., 0., 0., c_44, 0., 0.},
            {0., 0., 0., 0., c_44, 0.},
            {0., 0., 0., 0., 0., c_44}}};
+}
+
+// scale * diag(1, 1, 1, 1, 1, smallest): the eigenvalues of a diagonal
+// matrix are its entries, so the eigenvalue ratio is exactly `smallest`.
+std::array<std::array<double, 6>, 6> diagonal_voigt_matrix(
+    const double scale, const double smallest) {
+  std::array<std::array<double, 6>, 6> result{};
+  for (size_t i = 0; i < 5; ++i) {
+    gsl::at(gsl::at(result, i), i) = scale;
+  }
+  result[5][5] = scale * smallest;
+  return result;
 }
 
 void test_semantics() {
@@ -93,10 +107,12 @@ void test_errors() {
   // For a cubic crystal they are c_11 + 2 c_12 (hydrostatic, once),
   // c_11 - c_12 (twice) and c_44 (three times), and each case below makes
   // exactly one of them non-positive.
-  // c_11 - c_12 = -1 < 0
+  // c_11 - c_12 = -1 < 0. A negative eigenvalue is reported as physical
+  // instability, not as ill-conditioning (see test_threshold).
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{cubic_voigt_matrix(2., 3., 1.)},
-      Catch::Matchers::ContainsSubstring("must be positive definite"));
+      Catch::Matchers::ContainsSubstring("must be positive definite") and
+          Catch::Matchers::ContainsSubstring("would be unstable"));
   // Hydrostatic instability: c_11 + 2 c_12 = -1 < 0, although
   // c_11 > |c_12|, so that condition alone is not sufficient
   CHECK_THROWS_WITH(
@@ -106,12 +122,54 @@ void test_errors() {
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{cubic_voigt_matrix(3., 2., -1.)},
       Catch::Matchers::ContainsSubstring("must be positive definite"));
-  // Positive semidefinite: c_44 = 0 gives a zero eigenvalue, which is not
-  // above `min_relative_eigenvalue` times the largest eigenvalue
-  // (c_11 + 2 c_12 = 7). Only the message is checked, not the value.
+  // Positive semidefinite: c_44 = 0 gives a zero eigenvalue, which is
+  // non-positive and therefore reported as unstable (independent of the
+  // relative threshold). Only the message is checked, not the value.
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{cubic_voigt_matrix(3., 2., 0.)},
-      Catch::Matchers::ContainsSubstring("must be positive definite"));
+      Catch::Matchers::ContainsSubstring("must be positive definite") and
+          Catch::Matchers::ContainsSubstring("would be unstable"));
+}
+
+// The positive-definiteness check is relative: the smallest eigenvalue must
+// exceed `min_relative_eigenvalue` times the largest. Diagonal fixtures
+// make the eigenvalues exact, so the boundary can be tested on both sides.
+void test_threshold() {
+  INFO("Relative positive-definiteness threshold");
+  using Catch::Matchers::ContainsSubstring;
+  static_assert(AnisotropicHomogeneous::min_relative_eigenvalue == 1.e-12);
+  // The same outcomes after uniform rescaling by 1e9 (Pa instead of GPa)
+  // and by 1e-9 show that the threshold is relative, not absolute.
+  for (const double scale : {1., 1.e9, 1.e-9}) {
+    CAPTURE(scale);
+    // Ratio below the threshold: positive definite, but rejected as too
+    // ill-conditioned (not as unstable)
+    CHECK_THROWS_WITH(
+        AnisotropicHomogeneous{diagonal_voigt_matrix(scale, 0.5e-12)},
+        ContainsSubstring("too ill-conditioned") and
+            not ContainsSubstring("would be unstable"));
+    // Exactly at the threshold: the inequality is strict, so this is
+    // rejected. Both sides of the comparison are the product of the same
+    // two doubles (1e-12 and the scale), so there is no roundoff margin
+    // as long as LAPACK returns the diagonal entries exactly.
+    CHECK_THROWS_WITH(
+        AnisotropicHomogeneous{diagonal_voigt_matrix(scale, 1.e-12)},
+        ContainsSubstring("too ill-conditioned"));
+    // Ratio above the threshold: accepted
+    CHECK_NOTHROW(AnisotropicHomogeneous(diagonal_voigt_matrix(scale, 2.e-12)));
+  }
+  // Non-finite entries are rejected before the eigenvalue computation,
+  // with a message that names the entry
+  auto with_nan = cubic_voigt_matrix(3., 2., 1.);
+  with_nan[0][0] = std::numeric_limits<double>::quiet_NaN();
+  CHECK_THROWS_WITH(
+      AnisotropicHomogeneous{with_nan},
+      ContainsSubstring("must be finite") and ContainsSubstring("C[0][0]=nan"));
+  auto with_inf = cubic_voigt_matrix(3., 2., 1.);
+  with_inf[5][5] = std::numeric_limits<double>::infinity();
+  CHECK_THROWS_WITH(
+      AnisotropicHomogeneous{with_inf},
+      ContainsSubstring("must be finite") and ContainsSubstring("C[5][5]=inf"));
 }
 
 }  // namespace
@@ -122,6 +180,7 @@ SPECTRE_TEST_CASE(
   test_semantics();
   test_consistency_with_cubic_crystal();
   test_errors();
+  test_threshold();
 }
 
 }  // namespace Elasticity::ConstitutiveRelations
