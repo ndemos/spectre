@@ -68,7 +68,9 @@ AnisotropicHomogeneous::AnisotropicHomogeneous(
   }
   // The strain energy density e^T C e / 2 must be positive for every nonzero
   // strain, i.e. all eigenvalues of the symmetric Voigt matrix C must be
-  // positive.
+  // positive. The threshold is relative to the largest eigenvalue so that it
+  // is independent of the units of C and so that numerically singular
+  // matrices are rejected deterministically. `not (x > y)` also rejects NaN.
   blaze::SymmetricMatrix<blaze::DynamicMatrix<double>> voigt_matrix(6);
   for (size_t i = 0; i < 6; ++i) {
     for (size_t j = i; j < 6; ++j) {
@@ -77,11 +79,15 @@ AnisotropicHomogeneous::AnisotropicHomogeneous(
   }
   blaze::DynamicVector<double> eigenvalues(6);
   blaze::eigen(voigt_matrix, eigenvalues);
-  if (not(blaze::min(eigenvalues) > 0.)) {
+  const double min_eigenvalue = blaze::min(eigenvalues);
+  const double max_eigenvalue = blaze::max(eigenvalues);
+  if (not(min_eigenvalue > min_relative_eigenvalue * max_eigenvalue)) {
     PARSE_ERROR(context,
                 "StiffnessMatrix must be positive definite, but its smallest "
                 "eigenvalue is "
-                    << blaze::min(eigenvalues)
+                    << min_eigenvalue << ", which is not above "
+                    << min_relative_eigenvalue
+                    << " times its largest eigenvalue " << max_eigenvalue
                     << ". The material would be unstable (non-positive "
                        "strain energy for some strain).");
   }

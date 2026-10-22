@@ -9,6 +9,8 @@
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/Tensor.hpp"
+#include "Options/Context.hpp"
+#include "Options/ParseError.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
 #include "Utilities/Gsl.hpp"
@@ -42,8 +44,21 @@ double factorial(const size_t n) {
 }
 }  // namespace
 
-LaserBeam::LaserBeam(double beam_width, const std::vector<ModeInfo>& modes)
-    : beam_width_(beam_width), modes_(modes) {}
+LaserBeam::LaserBeam(const double beam_width,
+                     const std::vector<ModeInfo>& modes,
+                     const Options::Context& context)
+    : beam_width_(beam_width), modes_(modes) {
+  // `not (x > 0)` also rejects NaN
+  if (not(beam_width_ > 0.)) {
+    PARSE_ERROR(context, "The BeamWidth must be positive, but is "
+                             << beam_width_ << ".");
+  }
+  if (modes_.empty()) {
+    PARSE_ERROR(context,
+                "Modes must contain at least one mode, e.g. "
+                "'- {N: 0, M: 0, Weight: 1.}' for a TEM00 beam.");
+  }
+}
 
 void LaserBeam::apply(
     const gsl::not_null<tnsr::I<DataVector, 3>*> /*displacement*/,

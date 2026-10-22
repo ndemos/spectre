@@ -6,7 +6,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -30,6 +32,7 @@
 #include "PointwiseFunctions/AnalyticSolutions/Elasticity/HalfSpaceMirror.hpp"
 #include "PointwiseFunctions/Elasticity/ConstitutiveRelations/IsotropicHomogeneous.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
 
@@ -70,23 +73,44 @@ void apply_boundary_condition(
       n_dot_minus_stress, deriv_displacement);
 }
 
-// Pressure on the z = const surface with outward normal (0, 0, -1)
-DataVector pressure_on_z_surface(const LaserBeam& laser_beam,
-                                 const tnsr::I<DataVector, 3>& x) {
+// Pressure p on a flat surface with the constant outward unit normal n,
+// extracted from n_i (-T^{ij}) = -p n^j. Also checks that the traction has no
+// tangential component. The check is a single whole-vector comparison per
+// component to keep the number of assertions small on large grids.
+DataVector pressure_on_surface(const LaserBeam& laser_beam,
+                               const tnsr::I<DataVector, 3>& x,
+                               const std::array<double, 3>& normal) {
+  const size_t num_points = get<0>(x).size();
   auto face_normal = make_with_value<tnsr::i<DataVector, 3>>(x, 0.);
-  get<2>(face_normal) = -1.;
+  for (size_t d = 0; d < 3; ++d) {
+    face_normal.get(d) = gsl::at(normal, d);
+  }
   tnsr::I<DataVector, 3> displacement{
-      get<0>(x).size(), std::numeric_limits<double>::signaling_NaN()};
+      num_points, std::numeric_limits<double>::signaling_NaN()};
   tnsr::I<DataVector, 3> n_dot_minus_stress{
-      get<0>(x).size(), std::numeric_limits<double>::signaling_NaN()};
+      num_points, std::numeric_limits<double>::signaling_NaN()};
   const tnsr::iJ<DataVector, 3> deriv_displacement{
-      get<0>(x).size(), std::numeric_limits<double>::signaling_NaN()};
+      num_points, std::numeric_limits<double>::signaling_NaN()};
   laser_beam.apply(make_not_null(&displacement),
                    make_not_null(&n_dot_minus_stress), deriv_displacement, x,
                    face_normal);
-  CHECK(get<0>(n_dot_minus_stress) == DataVector(get<0>(x).size(), 0.));
-  CHECK(get<1>(n_dot_minus_stress) == DataVector(get<0>(x).size(), 0.));
-  return get<2>(n_dot_minus_stress);
+  DataVector pressure{num_points, 0.};
+  for (size_t d = 0; d < 3; ++d) {
+    pressure -= gsl::at(normal, d) * n_dot_minus_stress.get(d);
+  }
+  const double scale = max(abs(pressure));
+  for (size_t d = 0; d < 3; ++d) {
+    const DataVector residual =
+        n_dot_minus_stress.get(d) + gsl::at(normal, d) * pressure;
+    CHECK(max(abs(residual)) <= 1.e-14 * scale);
+  }
+  return pressure;
+}
+
+// Pressure on the z = const surface with outward normal (0, 0, -1)
+DataVector pressure_on_z_surface(const LaserBeam& laser_beam,
+                                 const tnsr::I<DataVector, 3>& x) {
+  return pressure_on_surface(laser_beam, x, {{0., 0., -1.}});
 }
 }  // namespace
 
@@ -142,6 +166,119 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
           std::vector<elliptic::BoundaryConditionType>{
               3, elliptic::BoundaryConditionType::Neumann});
   }
+  {
+    INFO("ModeInfo");
+    const auto mode = TestHelpers::test_creation<LaserBeam::ModeInfo>(
+        "N: 1\n"
+        "M: 3\n"
+        "Weight: -0.5");
+    CHECK(mode == LaserBeam::ModeInfo{1, 3, -0.5});
+    CHECK(mode != LaserBeam::ModeInfo{3, 1, -0.5});
+    test_serialization(mode);
+  }
+  {
+    INFO("Mode list order and repetition are preserved");
+    // Flow-style entries, as suggested in the help text
+    const std::vector<LaserBeam::ModeInfo> repeated{
+        {2, 0, -1.}, {0, 2, 1.}, {0, 2, 1.}};
+    const auto created_repeated = TestHelpers::test_factory_creation<
+        elliptic::BoundaryConditions::BoundaryCondition<3>, LaserBeam>(
+        "LaserBeam:\n"
+        "  BeamWidth: 2.\n"
+        "  Modes:\n"
+        "    - {N: 2, M: 0, Weight: -1.}\n"
+        "    - {N: 0, M: 2, Weight: 1.}\n"
+        "    - {N: 0, M: 2, Weight: 1.}");
+    const auto& laser_beam_repeated =
+        dynamic_cast<const LaserBeam&>(*created_repeated);
+    CHECK(laser_beam_repeated.modes() == repeated);
+    // Parsed fields of the first entry, independent of operator==
+    REQUIRE(laser_beam_repeated.modes().size() == 3);
+    CHECK(laser_beam_repeated.modes()[0].n == 2);
+    CHECK(laser_beam_repeated.modes()[0].m == 0);
+    CHECK(laser_beam_repeated.modes()[0].weight == -1.);
+    CHECK(laser_beam_repeated == LaserBeam{beam_width, repeated});
+    // operator== compares the mode lists element-wise, so a reordered list
+    // is a different object ...
+    const LaserBeam laser_beam_reordered{beam_width,
+                                         {{0, 2, 1.}, {0, 2, 1.}, {2, 0, -1.}}};
+    CHECK(laser_beam_repeated != laser_beam_reordered);
+    // ... but the pressure is invariant under reordering
+    tnsr::I<DataVector, 3> x_reorder{size_t{3}, 0.};
+    get<0>(x_reorder) = DataVector{0.3, -1.2, 2.1};
+    get<1>(x_reorder) = DataVector{-0.7, 0.4, 1.5};
+    const auto pressure_repeated =
+        pressure_on_z_surface(laser_beam_repeated, x_reorder);
+    const auto pressure_reordered =
+        pressure_on_z_surface(laser_beam_reordered, x_reorder);
+    CHECK_ITERABLE_APPROX(pressure_repeated, pressure_reordered);
+    test_serialization(laser_beam_repeated);
+  }
+  {
+    INFO("Invalid options");
+    using Catch::Matchers::ContainsSubstring;
+    const auto create = [](const std::string& options) {
+      return TestHelpers::test_factory_creation<
+          elliptic::BoundaryConditions::BoundaryCondition<3>, LaserBeam>(
+          options);
+    };
+    // Modes is required (the option parser has no defaults)
+    CHECK_THROWS_WITH(create("LaserBeam:\n"
+                             "  BeamWidth: 2."),
+                      ContainsSubstring("did not specify the option") and
+                          ContainsSubstring("Modes"));
+    // The mode indices are unsigned
+    CHECK_THROWS_WITH(create("LaserBeam:\n"
+                             "  BeamWidth: 2.\n"
+                             "  Modes:\n"
+                             "    - {N: -1, M: 0, Weight: 1.}"),
+                      ContainsSubstring("Failed to convert value"));
+    CHECK_THROWS_WITH(create("LaserBeam:\n"
+                             "  BeamWidth: 2.\n"
+                             "  Modes:\n"
+                             "    - {N: 0, M: -1, Weight: 1.}"),
+                      ContainsSubstring("Failed to convert value"));
+    // Misspelled key
+    CHECK_THROWS_WITH(
+        create("LaserBeam:\n"
+               "  BeamWidth: 2.\n"
+               "  Modes:\n"
+               "    - {N: 0, M: 0, Weigth: 1.}"),
+        ContainsSubstring("Option 'Weigth' is not a valid option"));
+    // Zero width passes the (inclusive) lower bound of the option but would
+    // divide by zero, so the constructor rejects it
+    CHECK_THROWS_WITH(create("LaserBeam:\n"
+                             "  BeamWidth: 0.\n"
+                             "  Modes:\n"
+                             "    - {N: 0, M: 0, Weight: 1.}"),
+                      ContainsSubstring("BeamWidth must be positive"));
+    CHECK_THROWS_WITH(create("LaserBeam:\n"
+                             "  BeamWidth: -1.\n"
+                             "  Modes:\n"
+                             "    - {N: 0, M: 0, Weight: 1.}"),
+                      ContainsSubstring("is below the lower bound"));
+    // An empty mode list would give zero traction
+    CHECK_THROWS_WITH(create("LaserBeam:\n"
+                             "  BeamWidth: 2.\n"
+                             "  Modes: []"),
+                      ContainsSubstring("at least one mode"));
+    // The same checks apply to direct construction
+    CHECK_THROWS_WITH(LaserBeam(0., tem00_modes()),
+                      ContainsSubstring("BeamWidth must be positive"));
+    CHECK_THROWS_WITH(LaserBeam(-1., tem00_modes()),
+                      ContainsSubstring("BeamWidth must be positive"));
+    CHECK_THROWS_WITH(LaserBeam(2., {}),
+                      ContainsSubstring("at least one mode"));
+    // Non-empty lists with zero or cancelling weights remain valid
+    const auto created_zero_weight = create(
+        "LaserBeam:\n"
+        "  BeamWidth: 2.\n"
+        "  Modes:\n"
+        "    - {N: 0, M: 0, Weight: 0.}");
+    CHECK(dynamic_cast<const LaserBeam&>(*created_zero_weight).modes() ==
+          std::vector<LaserBeam::ModeInfo>{{0, 0, 0.}});
+    CHECK(LaserBeam(2., {{0, 2, 1.}, {2, 0, -1.}}).modes().size() == 2);
+  }
 
   // Test applying the boundary conditions. The bounds are for x, the polar
   // and azimuthal angles of the face normal, and the beam width.
@@ -161,6 +298,20 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
   pypp::check_with_random_values<4>(
       &apply_boundary_condition<true, false>, "LaserBeam",
       {"normal_dot_minus_stress_linearized"}, bounds, DataVector{3});
+  {
+    INFO("Linearized condition overwrites the output");
+    // pypp above already fills the result buffer with random values before
+    // the call; this direct check makes the requirement explicit.
+    tnsr::I<DataVector, 3> displacement{size_t{4}, 1.};
+    tnsr::I<DataVector, 3> n_dot_minus_stress{size_t{4}, 1.};
+    const tnsr::iJ<DataVector, 3> deriv_displacement{size_t{4}, 1.};
+    LaserBeam::apply_linearized(make_not_null(&displacement),
+                                make_not_null(&n_dot_minus_stress),
+                                deriv_displacement);
+    for (size_t d = 0; d < 3; ++d) {
+      CHECK(n_dot_minus_stress.get(d) == DataVector(4, 0.));
+    }
+  }
 
   {
     INFO("Mode normalization, symmetry and orientation");
@@ -189,9 +340,19 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
                  square(spacing);
         };
     Approx custom_approx = Approx::custom().epsilon(1.e-11).scale(1.);
-    // Each mode with unit weight exerts unit total force
-    for (const auto& [n, m] : std::vector<std::pair<size_t, size_t>>{
-             {0, 0}, {0, 2}, {2, 0}, {1, 3}, {3, 3}, {4, 1}}) {
+    // Each mode with unit weight exerts unit total force. The higher orders
+    // exercise the Hermite recursion, `pow` and `factorial` at larger n; their
+    // profiles still vanish at the grid edges (H_10^2(12) e^{-144} ~ 1e-35).
+    for (const auto& [n, m] : std::vector<std::pair<size_t, size_t>>{{0, 0},
+                                                                     {0, 2},
+                                                                     {2, 0},
+                                                                     {1, 3},
+                                                                     {3, 3},
+                                                                     {4, 1},
+                                                                     {10, 0},
+                                                                     {0, 10},
+                                                                     {6, 6},
+                                                                     {8, 3}}) {
       CAPTURE(n);
       CAPTURE(m);
       CHECK(total_force({{n, m, 1.}}) == custom_approx(1.));
@@ -199,6 +360,34 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
     CHECK(total_force({{0, 0, 2.5}}) == custom_approx(2.5));
     CHECK(total_force({{0, 2, 1.}, {2, 0, -1.}}) == custom_approx(0.));
     CHECK(total_force(hg_modes()) == custom_approx(0.5));
+    // Overlap integrals of the squared profiles, normalized by TEM00's.
+    // Coating thermal noise of a thin coating on a half space scales with
+    // the integral of the squared pressure profile, so these ratios are the
+    // mode dependence of that noise. With t = u / r_0 the 1D integrals are
+    // int e^{-2t^2} dt = sqrt(pi/2), int H_2^2 e^{-2t^2} dt = 3 sqrt(pi/2)
+    // and int H_2^4 e^{-2t^2} dt = 41 sqrt(pi/2), which give
+    //   int p_00^2 dA = 1 / (2 pi r_0^2),
+    //   int p_20^2 dA / int p_00^2 dA = 41 / 64,
+    //   int p_02 p_20 dA / int p_00^2 dA = 9 / 64,
+    //   int (p_02 - p_20)^2 dA / int p_00^2 dA = 2 * 41/64 - 2 * 9/64 = 1.
+    const auto overlap = [&x, &r0, &spacing](
+                             const std::vector<LaserBeam::ModeInfo>& modes_a,
+                             const std::vector<LaserBeam::ModeInfo>& modes_b) {
+      const DataVector product =
+          pressure_on_z_surface(LaserBeam{r0, modes_a}, x) *
+          pressure_on_z_surface(LaserBeam{r0, modes_b}, x);
+      return sum(product) * square(spacing);
+    };
+    const double tem00_overlap = overlap(tem00_modes(), tem00_modes());
+    CHECK(tem00_overlap == custom_approx(1. / (2. * M_PI * square(r0))));
+    CHECK(overlap({{2, 0, 1.}}, {{2, 0, 1.}}) / tem00_overlap ==
+          custom_approx(41. / 64.));
+    CHECK(overlap({{0, 2, 1.}}, {{2, 0, 1.}}) / tem00_overlap ==
+          custom_approx(9. / 64.));
+    const std::vector<LaserBeam::ModeInfo> differential{{0, 2, 1.},
+                                                        {2, 0, -1.}};
+    CHECK(overlap(differential, differential) / tem00_overlap ==
+          custom_approx(1.));
     // TEM_nm(x, y) = TEM_mn(y, x)
     CHECK_ITERABLE_APPROX(
         pressure_on_z_surface(LaserBeam{r0, {{0, 2, 1.}}}, x),
@@ -215,6 +404,75 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
     // H_2(0)^2 e^{-1/2} / (pi r_0^2 2^2 2!) with r_0 = 1
     CHECK(pressure_tem20[1] == approx(exp(-0.5) / (2. * M_PI)));
   }
+
+  {
+    INFO("In-plane basis for normals close to the x-axis");
+    // For |n_x| > 0.9 the reference tangent is y instead of x, so u is the
+    // normalized projection of y into the surface and v = n x u. The random
+    // normals above rarely reach this branch, so check it with deterministic
+    // normals and the node of H_2 at r_0 / sqrt(2): TEM20 vanishes on the
+    // u-axis there and TEM02 on the v-axis. The third normal is not
+    // axis-aligned and exactly normalized: n = (-12, 5, 0) / 13 gives
+    // u = (5, 12, 0) / 13 and v = (0, 0, -1).
+    const double r0 = 1.5;
+    const double node = r0 / sqrt(2.);
+    // H_2(0)^2 e^{-1/2} / (pi r_0^2 2^2 2!)
+    const double pressure_at_node = exp(-0.5) / (2. * M_PI * square(r0));
+    using Vector = std::array<double, 3>;
+    for (const auto& [normal, u, v] :
+         std::vector<std::tuple<Vector, Vector, Vector>>{
+             {{{1., 0., 0.}}, {{0., 1., 0.}}, {{0., 0., 1.}}},
+             {{{-1., 0., 0.}}, {{0., 1., 0.}}, {{0., 0., -1.}}},
+             {{{-12. / 13., 5. / 13., 0.}},
+              {{5. / 13., 12. / 13., 0.}},
+              {{0., 0., -1.}}}}) {
+      INFO("n = (" << gsl::at(normal, 0) << ", " << gsl::at(normal, 1) << ", "
+                   << gsl::at(normal, 2) << ")");
+      // Points at the node along u, at the node along v, and the latter
+      // displaced along the normal (the distance from the surface through
+      // the origin must not matter)
+      tnsr::I<DataVector, 3> x{size_t{3}, 0.};
+      for (size_t d = 0; d < 3; ++d) {
+        x.get(d)[0] = node * gsl::at(u, d);
+        x.get(d)[1] = node * gsl::at(v, d);
+        x.get(d)[2] = node * gsl::at(v, d) + 3. * r0 * gsl::at(normal, d);
+      }
+      const auto tem20 =
+          pressure_on_surface(LaserBeam{r0, {{2, 0, 1.}}}, x, normal);
+      CHECK(tem20[0] == approx(0.));
+      CHECK(tem20[1] == approx(pressure_at_node));
+      CHECK(tem20[2] == approx(pressure_at_node));
+      const auto tem02 =
+          pressure_on_surface(LaserBeam{r0, {{0, 2, 1.}}}, x, normal);
+      CHECK(tem02[0] == approx(pressure_at_node));
+      CHECK(tem02[1] == approx(0.));
+      CHECK(tem02[2] == approx(0.));
+    }
+  }
+
+#ifdef SPECTRE_DEBUG
+  {
+    INFO("A face normal that varies across the face is rejected");
+    // Three points with the deviation at the interior one, so that a check
+    // comparing only the endpoints would miss it
+    tnsr::I<DataVector, 3> x{size_t{3}, 0.};
+    auto face_normal = make_with_value<tnsr::i<DataVector, 3>>(x, 0.);
+    get<2>(face_normal) = -1.;
+    get<0>(face_normal)[1] = 1.;
+    get<2>(face_normal)[1] = 0.;
+    tnsr::I<DataVector, 3> displacement{
+        size_t{3}, std::numeric_limits<double>::signaling_NaN()};
+    tnsr::I<DataVector, 3> n_dot_minus_stress{
+        size_t{3}, std::numeric_limits<double>::signaling_NaN()};
+    const tnsr::iJ<DataVector, 3> deriv_displacement{
+        size_t{3}, std::numeric_limits<double>::signaling_NaN()};
+    CHECK_THROWS_WITH(
+        laser_beam.apply(make_not_null(&displacement),
+                         make_not_null(&n_dot_minus_stress), deriv_displacement,
+                         x, face_normal),
+        Catch::Matchers::ContainsSubstring("assumes a flat surface"));
+  }
+#endif
 
   {
     INFO("Consistency with half-space mirror solution");

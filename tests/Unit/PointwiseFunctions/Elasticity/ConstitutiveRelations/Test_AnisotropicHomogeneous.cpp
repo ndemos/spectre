@@ -106,10 +106,9 @@ void test_errors() {
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{cubic_voigt_matrix(3., 2., -1.)},
       Catch::Matchers::ContainsSubstring("must be positive definite"));
-  // Positive semidefinite: c_44 = 0 gives a zero eigenvalue. The shear rows
-  // of the matrix are decoupled and diagonal, so LAPACK deflates them and
-  // returns this eigenvalue as exactly 0, which fails the check
-  // (min eigenvalue > 0). Only the message is checked, not the value.
+  // Positive semidefinite: c_44 = 0 gives a zero eigenvalue, which is not
+  // above `min_relative_eigenvalue` times the largest eigenvalue
+  // (c_11 + 2 c_12 = 7). Only the message is checked, not the value.
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{cubic_voigt_matrix(3., 2., 0.)},
       Catch::Matchers::ContainsSubstring("must be positive definite"));

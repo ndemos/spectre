@@ -21,7 +21,9 @@
 #include "Parallel/ArrayIndex.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/GetOutput.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
+#include "Utilities/MakeArray.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
 
 namespace {
@@ -399,6 +401,41 @@ void test_serialization() {
     CHECK(ElementId<VolumeDim>(get_output(element_id)) == element_id);
   }
 }
+
+// Deterministic check of the extreme representable values, which the random
+// test above reaches only by chance: the largest block id and grid index, and
+// the finest refinement level in every dimension. The xi segment indices are
+// chosen so that their bits fall into the low part, the high part, or both
+// parts of the split xi bitfield.
+template <size_t VolumeDim>
+void test_extreme_values() {
+  const size_t max_block_id =
+      two_to_the(ElementId<VolumeDim>::block_id_bits) - 1;
+  const size_t max_grid_index =
+      two_to_the(ElementId<VolumeDim>::grid_index_bits) - 1;
+  const size_t max_level = ElementId<VolumeDim>::max_refinement_level;
+  const size_t xi_lo_bits = ElementId<VolumeDim>::compact_segment_id_xi_lo_bits;
+  const SegmentId finest_last{max_level, two_to_the(max_level) - 1};
+  for (const size_t xi_index :
+       {size_t{0}, two_to_the(xi_lo_bits) - 1, two_to_the(xi_lo_bits),
+        two_to_the(max_level) - 1}) {
+    CAPTURE(xi_index);
+    auto segment_ids = make_array<VolumeDim>(finest_last);
+    gsl::at(segment_ids, 0) = SegmentId{max_level, xi_index};
+    const ElementId<VolumeDim> element_id{max_block_id, segment_ids,
+                                          max_grid_index};
+    CHECK(element_id.block_id() == max_block_id);
+    CHECK(element_id.grid_index() == max_grid_index);
+    CHECK(element_id.segment_ids() == segment_ids);
+    for (size_t d = 0; d < VolumeDim; ++d) {
+      CHECK(gsl::at(element_id.refinement_levels(), d) == max_level);
+    }
+    CHECK(element_id.id_of_parent(0).segment_id(0) ==
+          SegmentId{max_level - 1, xi_index / 2});
+    CHECK(serialize_and_deserialize(element_id) == element_id);
+    CHECK(ElementId<VolumeDim>(get_output(element_id)) == element_id);
+  }
+}
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.Domain.Structure.ElementId", "[Domain][Unit]") {
@@ -407,6 +444,9 @@ SPECTRE_TEST_CASE("Unit.Domain.Structure.ElementId", "[Domain][Unit]") {
   test_serialization<1>();
   test_serialization<2>();
   test_serialization<3>();
+  test_extreme_values<1>();
+  test_extreme_values<2>();
+  test_extreme_values<3>();
 #ifdef SPECTRE_DEBUG
   CHECK_THROWS_WITH(
       ElementId<1>(two_to_the(ElementId<1>::block_id_bits)),

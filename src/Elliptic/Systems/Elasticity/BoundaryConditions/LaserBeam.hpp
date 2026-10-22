@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <pup.h>
 #include <string>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "Domain/Tags.hpp"
 #include "Elliptic/BoundaryConditions/BoundaryCondition.hpp"
 #include "Elliptic/BoundaryConditions/BoundaryConditionType.hpp"
+#include "Options/Context.hpp"
 #include "Options/String.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Serialization/CharmPupable.hpp"
@@ -61,6 +63,10 @@ namespace Elasticity::BoundaryConditions {
  * normal to the z-axis the index \f$n\f$ therefore refers to the x-direction
  * and \f$m\f$ to the y-direction. The surface must be flat (constant normal).
  *
+ * The beam width must be positive and `Modes` must contain at least one
+ * mode. Both are checked when the object is created, also from an input
+ * file, and violations are reported as parse errors.
+ *
  * \par Beam width convention
  * \f$r_0\f$ is the 1/e _intensity_ radius of the Gaussian envelope,
  * \f$I \propto e^{-r^2/r_0^2}\f$, so the TEM00 FWHM is
@@ -89,7 +95,8 @@ class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
         "The width r_0 of the beam: the 1/e intensity radius of the Gaussian "
         "envelope, I ~ exp(-r^2/r_0^2), so the TEM00 FWHM = 2 * sqrt(ln 2) * "
         "r_0. NOT the 1/e^2 intensity radius w, which is sqrt(2) * r_0.";
-    // Prevents division by zero in the .cpp file
+    // Rejects negative values. Lower bounds are inclusive, so zero (which
+    // would divide by zero in the .cpp file) is rejected by the constructor.
     static type lower_bound() { return 0.0; }
   };
 
@@ -134,9 +141,9 @@ class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
   struct PolynomialModes {
     using type = std::vector<ModeInfo>;
     static constexpr Options::String help =
-        "List of modes to sum. Each entry is a map with keys N, M and Weight, "
-        "e.g. '- {N: 0, M: 2, Weight: 1.}'. Use a single entry "
-        "{N: 0, M: 0, Weight: 1.} for a TEM00 beam.";
+        "List of modes to sum (at least one). Each entry is a map with keys "
+        "N, M and Weight, e.g. '- {N: 0, M: 2, Weight: 1.}'. Use a single "
+        "entry {N: 0, M: 0, Weight: 1.} for a TEM00 beam.";
     static std::string name() { return "Modes"; }
   };
 
@@ -162,7 +169,10 @@ class LaserBeam : public elliptic::BoundaryConditions::BoundaryCondition<3> {
     return std::make_unique<LaserBeam>(*this);
   }
 
-  LaserBeam(double beam_width, const std::vector<ModeInfo>& modes);
+  /// The beam width must be positive and `modes` must be non-empty. Both are
+  /// checked in all build types and reported through `context`.
+  LaserBeam(double beam_width, const std::vector<ModeInfo>& modes,
+            const Options::Context& context = {});
 
   double beam_width() const { return beam_width_; }
 
