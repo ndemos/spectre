@@ -68,6 +68,12 @@ static_assert(sizeof(ElementId<3>) == 2 * sizeof(int),
 // ElementId.hpp).
 namespace {
 uint16_t make_compact_segment_id(const SegmentId& segment_id) {
+  // Check before packing: a larger level would be silently truncated by the
+  // compact segment ID bitfields of ElementId.
+  ASSERT(segment_id.refinement_level() <= ElementId<1>::max_refinement_level,
+         "Refinement level out of bounds: "
+             << segment_id.refinement_level()
+             << "\nMaximum value is: " << ElementId<1>::max_refinement_level);
   return (uint64_t{1} << segment_id.refinement_level()) +
          static_cast<uint16_t>(segment_id.index());
 }
@@ -156,12 +162,6 @@ ElementId<1>::ElementId(const size_t block_id,
   ASSERT(grid_index < two_to_the(grid_index_bits),
          "Grid index out of bounds: " << grid_index << "\nMaximum value is: "
                                       << two_to_the(grid_index_bits) - 1);
-  for (const auto& segment_id : segment_ids) {
-    ASSERT(segment_id.refinement_level() <= max_refinement_level,
-           "Refinement level out of bounds: " << segment_id.refinement_level()
-                                              << "\nMaximum value is: "
-                                              << max_refinement_level);
-  }
 }
 
 template <>
@@ -183,12 +183,6 @@ ElementId<2>::ElementId(const size_t block_id,
   ASSERT(grid_index < two_to_the(grid_index_bits),
          "Grid index out of bounds: " << grid_index << "\nMaximum value is: "
                                       << two_to_the(grid_index_bits) - 1);
-  for (const auto& segment_id : segment_ids) {
-    ASSERT(segment_id.refinement_level() <= max_refinement_level,
-           "Refinement level out of bounds: " << segment_id.refinement_level()
-                                              << "\nMaximum value is: "
-                                              << max_refinement_level);
-  }
 }
 
 template <>
@@ -210,12 +204,6 @@ ElementId<3>::ElementId(const size_t block_id,
   ASSERT(grid_index < two_to_the(grid_index_bits),
          "Grid index out of bounds: " << grid_index << "\nMaximum value is: "
                                       << two_to_the(grid_index_bits) - 1);
-  for (const auto& segment_id : segment_ids) {
-    ASSERT(segment_id.refinement_level() <= max_refinement_level,
-           "Refinement level out of bounds: " << segment_id.refinement_level()
-                                              << "\nMaximum value is: "
-                                              << max_refinement_level);
-  }
 }
 
 template <size_t VolumeDim>

@@ -36,20 +36,24 @@ namespace Elasticity::BoundaryConditions {
  * \f$w_k\f$:
  *
  * \f{align}
- * n_i T^{ij} = -n^j \sum_k w_k
+ * n_i \left(-T^{ij}\right) = -p \, n^j, \quad
+ * p = \sum_k w_k
  * \frac{H_{n_k}^2(u / r_0) H_{m_k}^2(v / r_0)}
  * {2^{n_k + m_k} n_k! m_k!} \frac{e^{-\frac{r^2}{r_0^2}}}{\pi r_0^2}
  * \f}
  *
- * where \f$n_i\f$ is the unit normal pointing _out_ of the surface, \f$r\f$ is
- * the coordinate distance from the origin in the plane perpendicular to
- * \f$n_i\f$, \f$(u, v)\f$ are coordinates in that plane, \f$H_n\f$ are the
- * physicists' Hermite polynomials, and \f$r_0\f$ is the "beam width"
- * parameter. Each mode is normalized so that it exerts unit total force,
- * i.e. the total force is \f$\sum_k w_k\f$. Negative weights subtract
- * pressure, e.g. for differential measurements such as TEM02 - TEM20. For the
- * single mode \f$(0, 0)\f$ with unit weight this reduces to the Gaussian
- * profile \f$e^{-r^2/r_0^2} / (\pi r_0^2)\f$.
+ * where \f$T^{ij} = -Y^{ijkl} S_{kl}\f$ is the stress in the sign convention
+ * of `Elasticity::FirstOrderSystem` (so \f$-T^{ij}\f$ is the conventional
+ * stress and the condition is a compressive normal traction for
+ * \f$p > 0\f$), \f$n_i\f$ is the unit normal pointing _out_ of the surface,
+ * \f$r\f$ is the coordinate distance from the origin in the plane
+ * perpendicular to \f$n_i\f$, \f$(u, v)\f$ are coordinates in that plane,
+ * \f$H_n\f$ are the physicists' Hermite polynomials, and \f$r_0\f$ is the
+ * "beam width" parameter. Each mode is normalized so that it exerts unit
+ * total force, i.e. the total force is \f$\sum_k w_k\f$. Negative weights
+ * subtract pressure, e.g. for differential measurements such as TEM02 -
+ * TEM20. For the single mode \f$(0, 0)\f$ with unit weight this reduces to
+ * the Gaussian profile \f$e^{-r^2/r_0^2} / (\pi r_0^2)\f$.
  *
  * The in-plane basis is \f$\hat{u} \propto \hat{t} - (\hat{t} \cdot n) n\f$
  * with \f$\hat{t} = \hat{x}\f$, or \f$\hat{t} = \hat{y}\f$ if

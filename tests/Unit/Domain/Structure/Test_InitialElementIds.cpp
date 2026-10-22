@@ -6,11 +6,13 @@
 #include <array>
 #include <boost/rational.hpp>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "Domain/FunctionsOfTime/FunctionOfTime.hpp"
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/InitialElementIds.hpp"
+#include "Domain/Structure/SegmentId.hpp"
 #include "Helpers/Domain/DomainTestHelpers.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
@@ -64,4 +66,27 @@ SPECTRE_TEST_CASE("Unit.Domain.Structure.InitialElementIds", "[Domain][Unit]") {
   test_initial_element_ids(element_ids_3d, initial_refinement_levels_3d, 0);
   test_initial_element_ids(initial_element_ids(initial_refinement_levels_3d, 3),
                            initial_refinement_levels_3d, 3);
+
+  {
+    INFO("Refinement level limit (checked in all build types)");
+    const size_t max_level = ElementId<1>::max_refinement_level;
+    // The maximum level is representable without truncation
+    const auto finest_ids = initial_element_ids<1>(0, {{max_level}});
+    REQUIRE(finest_ids.size() == two_to_the(max_level));
+    CHECK(finest_ids.back().segment_id(0) ==
+          SegmentId(max_level, two_to_the(max_level) - 1));
+    // One level more is rejected, in every dimension and through both
+    // overloads
+    const std::string expected_message =
+        "exceeds the maximum refinement level " + std::to_string(max_level);
+    CHECK_THROWS_WITH(initial_element_ids<1>(0, {{max_level + 1}}),
+                      Catch::Matchers::ContainsSubstring(expected_message));
+    CHECK_THROWS_WITH(initial_element_ids<2>(0, {{0, max_level + 1}}),
+                      Catch::Matchers::ContainsSubstring(expected_message));
+    CHECK_THROWS_WITH(initial_element_ids<3>(0, {{0, 0, max_level + 1}}),
+                      Catch::Matchers::ContainsSubstring(expected_message));
+    CHECK_THROWS_WITH(initial_element_ids(std::vector<std::array<size_t, 3>>{
+                          {{1, 1, 1}}, {{max_level + 1, 0, 0}}}),
+                      Catch::Matchers::ContainsSubstring("of block 1 exceeds"));
+  }
 }

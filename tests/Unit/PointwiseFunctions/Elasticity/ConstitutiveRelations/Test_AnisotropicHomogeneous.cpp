@@ -89,14 +89,29 @@ void test_errors() {
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{asymmetric},
       Catch::Matchers::ContainsSubstring("must be symmetric in Voigt"));
-  // Cubic stability requires c_11 > |c_12|: here the eigenvalue
-  // c_11 - c_12 = -1 is negative
+  // The criterion is that all eigenvalues of the Voigt matrix are positive.
+  // For a cubic crystal they are c_11 + 2 c_12 (hydrostatic, once),
+  // c_11 - c_12 (twice) and c_44 (three times), and each case below makes
+  // exactly one of them non-positive.
+  // c_11 - c_12 = -1 < 0
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{cubic_voigt_matrix(2., 3., 1.)},
       Catch::Matchers::ContainsSubstring("must be positive definite"));
-  // A negative shear stiffness
+  // Hydrostatic instability: c_11 + 2 c_12 = -1 < 0, although
+  // c_11 > |c_12|, so that condition alone is not sufficient
+  CHECK_THROWS_WITH(
+      AnisotropicHomogeneous{cubic_voigt_matrix(2., -1.5, 1.)},
+      Catch::Matchers::ContainsSubstring("must be positive definite"));
+  // c_44 = -1 < 0
   CHECK_THROWS_WITH(
       AnisotropicHomogeneous{cubic_voigt_matrix(3., 2., -1.)},
+      Catch::Matchers::ContainsSubstring("must be positive definite"));
+  // Positive semidefinite: c_44 = 0 gives a zero eigenvalue. The shear rows
+  // of the matrix are decoupled and diagonal, so LAPACK deflates them and
+  // returns this eigenvalue as exactly 0, which fails the check
+  // (min eigenvalue > 0). Only the message is checked, not the value.
+  CHECK_THROWS_WITH(
+      AnisotropicHomogeneous{cubic_voigt_matrix(3., 2., 0.)},
       Catch::Matchers::ContainsSubstring("must be positive definite"));
 }
 
