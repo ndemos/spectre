@@ -8,13 +8,54 @@
 #include "Domain/Structure/ElementId.hpp"
 #include "Domain/Structure/SegmentId.hpp"
 #include "Utilities/ConstantExpressions.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/GenerateInstantiations.hpp"
 #include "Utilities/MakeArray.hpp"
+
+namespace {
+// Always-on check (not an ASSERT): the number of blocks comes from user input
+// (the domain creator's options), and a block ID above the maximum would be
+// silently truncated by the block ID bitfield of ElementId in release builds.
+// Every block ID that fits the bitfield is usable, including the largest one:
+// ElementId::external_boundary_id() also has it, but its compact segment IDs
+// are all 0, which no actual element has.
+template <size_t Dim>
+void check_block_id(const size_t block_id) {
+  constexpr size_t max_number_of_blocks =
+      two_to_the(ElementId<Dim>::block_id_bits);
+  if (block_id >= max_number_of_blocks) {
+    ERROR("Block id " << block_id << " exceeds the maximum block id "
+                      << max_number_of_blocks - 1
+                      << " that ElementId can represent, so a domain can "
+                         "have at most "
+                      << max_number_of_blocks << " blocks.");
+  }
+}
+
+// Always-on check (not an ASSERT): the initial refinement comes from user
+// input, and a level above the maximum would be silently truncated by the
+// compact segment ID bitfields of ElementId in release builds.
+template <size_t Dim>
+void check_initial_refinement(const size_t block_id,
+                              const std::array<size_t, Dim>& initial_ref_levs) {
+  for (size_t d = 0; d < Dim; ++d) {
+    if (initial_ref_levs[d] > ElementId<Dim>::max_refinement_level) {
+      ERROR("Initial refinement level "
+            << initial_ref_levs[d] << " in dimension " << d << " of block "
+            << block_id << " exceeds the maximum refinement level "
+            << ElementId<Dim>::max_refinement_level
+            << " that ElementId can represent.");
+    }
+  }
+}
+}  // namespace
 
 template <>
 std::vector<ElementId<1>> initial_element_ids<1>(
     const size_t block_id, const std::array<size_t, 1> initial_ref_levs,
     const size_t grid_index) {
+  check_block_id<1>(block_id);
+  check_initial_refinement(block_id, initial_ref_levs);
   std::vector<ElementId<1>> ids;
   ids.reserve(two_to_the(initial_ref_levs[0]));
   for (size_t x_i = 0; x_i < two_to_the(initial_ref_levs[0]); ++x_i) {
@@ -28,6 +69,8 @@ template <>
 std::vector<ElementId<2>> initial_element_ids<2>(
     const size_t block_id, const std::array<size_t, 2> initial_ref_levs,
     const size_t grid_index) {
+  check_block_id<2>(block_id);
+  check_initial_refinement(block_id, initial_ref_levs);
   std::vector<ElementId<2>> ids;
   ids.reserve(two_to_the(initial_ref_levs[0]) *
               two_to_the(initial_ref_levs[1]));
@@ -46,6 +89,8 @@ template <>
 std::vector<ElementId<3>> initial_element_ids<3>(
     const size_t block_id, const std::array<size_t, 3> initial_ref_levs,
     const size_t grid_index) {
+  check_block_id<3>(block_id);
+  check_initial_refinement(block_id, initial_ref_levs);
   std::vector<ElementId<3>> ids;
   ids.reserve(two_to_the(initial_ref_levs[0]) *
               two_to_the(initial_ref_levs[1]) *

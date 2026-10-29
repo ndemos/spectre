@@ -10,6 +10,7 @@
 #include <pup.h>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Domain/Structure/Direction.hpp"
@@ -21,14 +22,17 @@
 #include "Parallel/ArrayIndex.hpp"
 #include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/GetOutput.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
+#include "Utilities/MakeArray.hpp"
 #include "Utilities/Serialization/Serialize.hpp"
 
 namespace {
 template <size_t Dim>
 struct DirectionTester : public ElementId<Dim> {
-  DirectionTester(const Direction<Dim>& direction, const ElementId<Dim>& id)
-      : ElementId<Dim>(direction, id) {}
+  DirectionTester(const Direction<Dim>& dir, const ElementId<Dim>& id)
+      : ElementId<Dim>(dir, id) {}
+  using ElementId<Dim>::direction;
 };
 
 template <size_t VolumeDim>
@@ -399,36 +403,308 @@ void test_serialization() {
     CHECK(ElementId<VolumeDim>(get_output(element_id)) == element_id);
   }
 }
+
+// to_short_id() returns the 45 segment ID bits: the compact xi in bits 0-14,
+// eta in bits 15-29 and zeta in bits 30-44, where a compact segment ID is
+// 2^level + index. The expected values below are computed from the compact
+// segment IDs, independently of how the implementation extracts them.
 void test_to_short_id() {
-  // Same segments, different block_id → same short_id
+  static_assert(ElementId<3>::max_refinement_level == 14 and
+                ElementId<3>::compact_segment_id_xi_lo_bits == 13);
+  // Same segments, different block id or grid index -> same short id
   const ElementId<3> elem_b0{0, {{{2, 3}, {1, 0}, {1, 1}}}};
   const ElementId<3> elem_b5{5, {{{2, 3}, {1, 0}, {1, 1}}}};
   CHECK(elem_b0.to_short_id() == elem_b5.to_short_id());
-
-  // Same segments, different grid_index → same short_id
   const ElementId<3> elem_g0{0, {{{2, 3}, {1, 0}, {1, 1}}}, 0};
   const ElementId<3> elem_g3{0, {{{2, 3}, {1, 0}, {1, 1}}}, 3};
   CHECK(elem_g0.to_short_id() == elem_g3.to_short_id());
 
-  // Different segments → different short_id
-  const ElementId<3> elem_a{0, {{{2, 3}, {1, 0}, {1, 1}}}};
-  const ElementId<3> elem_b{0, {{{2, 2}, {1, 0}, {1, 1}}}};
-  CHECK(elem_a.to_short_id() != elem_b.to_short_id());
+  // xi L14 I10923: compact 2^14 + 10923 = 27307 = 11|0101010101011, with bits
+  // in both the high part (11) and the low part (2731) of the split xi
+  // bitfield. eta L3 I5: compact 2^3 + 5 = 13. zeta L14 I1: compact
+  // 2^14 + 1 = 16385.
+  const ElementId<3> id{0, {{{14, 10923}, {3, 5}, {14, 1}}}};
+  const size_t short_id = id.to_short_id();
+  CHECK((short_id bitand 0x7FFF_st) == 27307_st);
+  CHECK(((short_id >> 15) bitand 0x7FFF_st) == 13_st);
+  CHECK((short_id >> 30) == 16385_st);
+  // 27307 + 13 * 2^15 + 16385 * 2^30
+  CHECK(short_id == 17593260239531_st);
 
-  // Verify value matches expected bit-shift
-  // The raw 64-bit representation shifted right by 16 should equal to_short_id
-  uint64_t raw = 0;
-  std::memcpy(&raw, &elem_b0, sizeof(raw));
-  CHECK(elem_b0.to_short_id() == (raw >> 16));
+  // A direction other than self gives the same short id; a shift by 16 would
+  // put direction bits 1-3 into bits 0-2
+  const DirectionTester<3> id_upper_xi{Direction<3>::upper_xi(), id};
+  CHECK(id_upper_xi.direction() == Direction<3>::upper_xi());
+  CHECK(id_upper_xi.to_short_id() == short_id);
+  const DirectionTester<3> id_lower_zeta{Direction<3>::lower_zeta(), id};
+  CHECK(id_lower_zeta.direction() == Direction<3>::lower_zeta());
+  CHECK(id_lower_zeta.to_short_id() == short_id);
 
-  // Also test 1D and 2D
-  const ElementId<1> elem_1d_a{0, {{{3, 5}}}};
-  const ElementId<1> elem_1d_b{7, {{{3, 5}}}};
-  CHECK(elem_1d_a.to_short_id() == elem_1d_b.to_short_id());
+  // The xi and eta above are odd, so they cannot detect an implementation
+  // that sets bit 0 of the short id, or one that leaks direction bit 0 (bit 15
+  // of the first word) into bit 15 of the short id (bit 0 of eta). xi L14
+  // I10922: compact 2^14 + 10922 = 27306 = 11|0101010101010, even, with bits
+  // in both parts of the split xi bitfield. eta L3 I4: compact 2^3 + 4 = 12,
+  // even. zeta L14 I1: 16385 as above.
+  const ElementId<3> id_even{0, {{{14, 10922}, {3, 4}, {14, 1}}}};
+  const size_t short_id_even = id_even.to_short_id();
+  CHECK((short_id_even bitand 0x7FFF_st) == 27306_st);
+  CHECK(((short_id_even >> 15) bitand 0x7FFF_st) == 12_st);
+  CHECK((short_id_even >> 30) == 16385_st);
+  // 27306 + 12 * 2^15 + 16385 * 2^30
+  CHECK(short_id_even == 17593260206762_st);
+  // Direction bits are axis bitor side, so an eta direction sets direction
+  // bit 0: upper eta is 0b01 bitor 0b1000 = 0b1001, whereas self, upper xi
+  // and lower zeta are 0b1100, 0b1000 and 0b0110
+  const DirectionTester<3> id_upper_eta{Direction<3>::upper_eta(), id_even};
+  CHECK(id_upper_eta.direction() == Direction<3>::upper_eta());
+  CHECK(id_upper_eta.to_short_id() == short_id_even);
 
-  const ElementId<2> elem_2d_a{0, {{{2, 1}, {3, 5}}}};
-  const ElementId<2> elem_2d_b{3, {{{2, 1}, {3, 5}}}, 2};
-  CHECK(elem_2d_a.to_short_id() == elem_2d_b.to_short_id());
+  // Each compact value is a single power of two, so only bits 14, 18 and 44
+  // of the short id are set, and an implementation that ORs a constant into
+  // any other bit fails, e.g. `| 2`, which the ids above miss (each of their
+  // xi has bit 1 set). xi L14 I0: compact 2^14 = 16384 = 10|0000000000000.
+  // eta L3 I0: compact 2^3 = 8. zeta L14 I0: compact 2^14 = 16384.
+  const ElementId<3> id_pow2{0, {{{14, 0}, {3, 0}, {14, 0}}}};
+  const size_t short_id_pow2 = id_pow2.to_short_id();
+  CHECK((short_id_pow2 bitand 0x7FFF_st) == 16384_st);
+  CHECK(((short_id_pow2 >> 15) bitand 0x7FFF_st) == 8_st);
+  CHECK((short_id_pow2 >> 30) == 16384_st);
+  // 16384 + 8 * 2^15 + 16384 * 2^30
+  CHECK(short_id_pow2 == 17592186322944_st);
+
+  // xi below level 14, so that bit 14 is 0: xi L13 I0: compact 2^13 = 8192 =
+  // 01|0000000000000. eta L0 I0 and zeta L0 I0: compact 2^0 = 1. Only bits
+  // 13, 15 and 30 of the short id are set, none of them set above.
+  const ElementId<3> id_pow2_low{0, {{{13, 0}, {0, 0}, {0, 0}}}};
+  const size_t short_id_pow2_low = id_pow2_low.to_short_id();
+  CHECK((short_id_pow2_low bitand 0x7FFF_st) == 8192_st);
+  CHECK(((short_id_pow2_low >> 15) bitand 0x7FFF_st) == 1_st);
+  CHECK((short_id_pow2_low >> 30) == 1_st);
+  // 8192 + 1 * 2^15 + 1 * 2^30
+  CHECK(short_id_pow2_low == 1073782784_st);
+
+  // Upper eta (0b1001) and lower zeta (0b0110) between them carry all four
+  // direction bits, and the two ids above share no set bit of the short id,
+  // so a direction bit leaking into any bit of the short id changes it for
+  // at least one of them (bits 2 and 3, which self 0b1100 also carries,
+  // already change the value checks above)
+  const auto check_direction = [](const Direction<3>& dir,
+                                  const ElementId<3>& self_id) {
+    const DirectionTester<3> id_with_dir{dir, self_id};
+    CHECK(id_with_dir.direction() == dir);
+    CHECK(id_with_dir.to_short_id() == self_id.to_short_id());
+  };
+  check_direction(Direction<3>::upper_eta(), id_pow2);
+  check_direction(Direction<3>::lower_zeta(), id_pow2);
+  check_direction(Direction<3>::upper_eta(), id_pow2_low);
+  check_direction(Direction<3>::lower_zeta(), id_pow2_low);
+
+  // Every single source bit of the raw word on its own, on the segments of
+  // the two ids above in turn: each block id bit, each grid index bit, and
+  // each of xi, eta and zeta replaced by level 0-14 with index 0 (one bit of
+  // the compact segment id). The two bases share no set bit of the short id,
+  // so a source bit copied into any other bit of the short id changes it for
+  // at least one of them. Each short id is checked against the compact
+  // values 2^level + index of the segments the id was built from, as
+  // xi + eta * 2^15 + zeta * 2^30.
+  const auto check_value = [](const size_t block_id,
+                              const std::array<SegmentId, 3>& segments,
+                              const size_t grid_index) {
+    const auto compact = [&segments](const size_t dim) {
+      return two_to_the(gsl::at(segments, dim).refinement_level()) +
+             gsl::at(segments, dim).index();
+    };
+    const size_t swept_id =
+        ElementId<3>{block_id, segments, grid_index}.to_short_id();
+    CHECK((swept_id bitand 0x7FFF_st) == compact(0));
+    CHECK(((swept_id >> 15) bitand 0x7FFF_st) == compact(1));
+    CHECK((swept_id >> 30) == compact(2));
+    CHECK(swept_id == compact(0) + (compact(1) << 15) + (compact(2) << 30));
+  };
+  for (const auto& base :
+       make_array(std::array<SegmentId, 3>{{{14, 0}, {3, 0}, {14, 0}}},
+                  std::array<SegmentId, 3>{{{13, 0}, {0, 0}, {0, 0}}})) {
+    for (size_t k = 0; k < ElementId<3>::block_id_bits; ++k) {
+      check_value(two_to_the(k), base, 0);
+    }
+    for (size_t k = 0; k < ElementId<3>::grid_index_bits; ++k) {
+      check_value(0, base, two_to_the(k));
+    }
+    for (size_t dim = 0; dim < 3; ++dim) {
+      for (size_t level = 0; level <= ElementId<3>::max_refinement_level;
+           ++level) {
+        std::array<SegmentId, 3> segments = base;
+        gsl::at(segments, dim) = SegmentId{level, 0};
+        check_value(0, segments, 0);
+      }
+    }
+  }
+
+  // Largest block id and grid index, every segment L14 I16383 (compact
+  // 2^15 - 1): all 45 bits set, 2^45 - 1
+  const SegmentId finest_last{14, 16383};
+  const ElementId<3> extreme{two_to_the(ElementId<3>::block_id_bits) - 1,
+                             {{finest_last, finest_last, finest_last}},
+                             two_to_the(ElementId<3>::grid_index_bits) - 1};
+  CHECK(extreme.to_short_id() == 35184372088831_st);
+
+  // 1D and 2D: the unused segment fields are zero. 1D: 2^15 - 1. 2D: the xi
+  // and eta above, 27307 + 13 * 2^15
+  CHECK(ElementId<1>{0, {{{14, 16383}}}}.to_short_id() == 32767_st);
+  CHECK(ElementId<2>{0, {{{14, 10923}, {3, 5}}}}.to_short_id() == 453291_st);
+}
+
+// Deterministic check of the extreme representable values, which the random
+// test above reaches only by chance: the largest block id and grid index, and
+// the finest refinement level in every dimension. The xi segment indices are
+// chosen so that their bits fall into the low part, the high part, or both
+// parts of the split xi bitfield.
+template <size_t VolumeDim>
+void test_extreme_values() {
+  const size_t max_block_id =
+      two_to_the(ElementId<VolumeDim>::block_id_bits) - 1;
+  const size_t max_grid_index =
+      two_to_the(ElementId<VolumeDim>::grid_index_bits) - 1;
+  const size_t max_level = ElementId<VolumeDim>::max_refinement_level;
+  const size_t xi_lo_bits = ElementId<VolumeDim>::compact_segment_id_xi_lo_bits;
+  const SegmentId finest_last{max_level, two_to_the(max_level) - 1};
+  for (const size_t xi_index :
+       {size_t{0}, two_to_the(xi_lo_bits) - 1, two_to_the(xi_lo_bits),
+        two_to_the(max_level) - 1}) {
+    CAPTURE(xi_index);
+    auto segment_ids = make_array<VolumeDim>(finest_last);
+    gsl::at(segment_ids, 0) = SegmentId{max_level, xi_index};
+    const ElementId<VolumeDim> element_id{max_block_id, segment_ids,
+                                          max_grid_index};
+    CHECK(element_id.block_id() == max_block_id);
+    CHECK(element_id.grid_index() == max_grid_index);
+    CHECK(element_id.segment_ids() == segment_ids);
+    for (size_t d = 0; d < VolumeDim; ++d) {
+      CHECK(gsl::at(element_id.refinement_levels(), d) == max_level);
+    }
+    CHECK(element_id.id_of_parent(0).segment_id(0) ==
+          SegmentId{max_level - 1, xi_index / 2});
+    CHECK(serialize_and_deserialize(element_id) == element_id);
+    CHECK(ElementId<VolumeDim>(get_output(element_id)) == element_id);
+  }
+}
+
+// The carry across the split of the xi bitfield on the write path of
+// id_of_child (test_extreme_values covers only id_of_parent). The xi segment
+// on level 12 with index 2^12 - 1 has the compact value 2^13 - 1, entirely in
+// the low part; its upper child, level 13 with index 2^13 - 1, has the compact
+// value 2^14 - 1, whose leading bit is the lowest bit of the high part. The
+// other segments are on the finest level with the largest index.
+template <size_t VolumeDim>
+void test_child_across_xi_split() {
+  const size_t max_block_id =
+      two_to_the(ElementId<VolumeDim>::block_id_bits) - 1;
+  const size_t max_grid_index =
+      two_to_the(ElementId<VolumeDim>::grid_index_bits) - 1;
+  const size_t max_level = ElementId<VolumeDim>::max_refinement_level;
+  const size_t xi_lo_bits = ElementId<VolumeDim>::compact_segment_id_xi_lo_bits;
+  const SegmentId finest_last{max_level, two_to_the(max_level) - 1};
+  auto segment_ids = make_array<VolumeDim>(finest_last);
+  gsl::at(segment_ids, 0) =
+      SegmentId{xi_lo_bits - 1, two_to_the(xi_lo_bits - 1) - 1};
+  const ElementId<VolumeDim> parent{max_block_id, segment_ids, max_grid_index};
+  for (const auto& [side, child_xi_index] :
+       {std::pair{Side::Lower, two_to_the(xi_lo_bits) - 2},
+        std::pair{Side::Upper, two_to_the(xi_lo_bits) - 1}}) {
+    CAPTURE(side);
+    const ElementId<VolumeDim> child = parent.id_of_child(0, side);
+    auto expected_segment_ids = segment_ids;
+    gsl::at(expected_segment_ids, 0) = SegmentId{xi_lo_bits, child_xi_index};
+    CHECK(child.segment_ids() == expected_segment_ids);
+    CHECK(child.block_id() == max_block_id);
+    CHECK(child.grid_index() == max_grid_index);
+    CHECK(child.id_of_parent(0) == parent);
+  }
+  if constexpr (VolumeDim == 1) {
+    // Catches a carry that is set whatever the top bit of the low part (the
+    // parent above has the low part all ones). Parent 01|0...0 (level 13,
+    // index 0) has carry 0: children 10|0...0 and 10|0...01
+    const ElementId<1> zero_lo_parent{0, {{{xi_lo_bits, 0}}}};
+    CHECK(zero_lo_parent.id_of_child(0, Side::Lower).segment_id(0) ==
+          SegmentId{xi_lo_bits + 1, 0});
+    CHECK(zero_lo_parent.id_of_child(0, Side::Upper).segment_id(0) ==
+          SegmentId{xi_lo_bits + 1, 1});
+    // Catches a carry from `lo != 0` or `lo & 1` instead of the top bit of
+    // the low part. Parent 01|0...01 (level 13, index 1) has carry 0:
+    // children 10|0...010 and 10|0...011 (either mutant gives 11|0...01x)
+    const ElementId<1> low_bit_parent{0, {{{xi_lo_bits, 1}}}};
+    CHECK(low_bit_parent.id_of_child(0, Side::Lower).segment_id(0) ==
+          SegmentId{xi_lo_bits + 1, 2});
+    CHECK(low_bit_parent.id_of_child(0, Side::Upper).segment_id(0) ==
+          SegmentId{xi_lo_bits + 1, 3});
+  }
+}
+
+// Sites that read the split xi field, with xi bits in the high part. Compact
+// xi values are written as high part | low part (2 | 13 bits).
+void test_xi_high_part_sites() {
+  static_assert(ElementId<1>::compact_segment_id_xi_lo_bits == 13 and
+                ElementId<1>::max_refinement_level == 14);
+  using Hash = std::hash<ElementId<1>>;
+  const ElementId<1> l13_first{0, {{{13, 0}}}};     // 01|0...0
+  const ElementId<1> l13_last{0, {{{13, 8191}}}};   // 01|1...1
+  const ElementId<1> l14_first{0, {{{14, 0}}}};     // 10|0...0
+  const ElementId<1> l14_last{0, {{{14, 16383}}}};  // 11|1...1
+
+  // (a) operator< compares the high part first: 01|1...1 < 10|0...0
+  CHECK(l13_last < l14_first);
+  CHECK_FALSE(l14_first < l13_last);
+  // Catches comparing only the high part. Equal high parts, 01|0...0 <
+  // 01|1...1, are ordered by the low part
+  CHECK(l13_first < l13_last);
+  CHECK_FALSE(l13_last < l13_first);
+
+  // (b) number_of_block_boundaries and is_zeroth_element through
+  // compact_segment_id_xi(): 10|0...0 is on the lower and 11|1...1 on the
+  // upper boundary; 10|1...1 (low part all ones) is on neither; 11|0...0
+  // (low part zero) is not the zeroth element
+  CHECK(l14_first.number_of_block_boundaries() == 1);
+  CHECK(l14_last.number_of_block_boundaries() == 1);
+  CHECK(ElementId<1>{0, {{{14, 8191}}}}.number_of_block_boundaries() == 0);
+  CHECK(is_zeroth_element(l14_first));
+  CHECK_FALSE(is_zeroth_element(ElementId<1>{0, {{{14, 8192}}}}));
+
+  // (c) operator== and hash_value for ids that differ only in the high part,
+  // 01|0...0 and 10|0...0; the direction-copy constructor at 10|0...0
+  CHECK(l13_first != l14_first);
+  CHECK(Hash{}(l13_first) != Hash{}(l14_first));
+  // Catches dropping one of the two high bits from operator== or the hash.
+  // 01|0...0 vs 11|0...0 differ only in the upper high bit, 10|0...0 vs
+  // 11|0...0 only in the lower one
+  const ElementId<1> l14_high_first{0, {{{14, 8192}}}};  // 11|0...0
+  CHECK(l13_first != l14_high_first);
+  CHECK(Hash{}(l13_first) != Hash{}(l14_high_first));
+  CHECK(l14_first != l14_high_first);
+  CHECK(Hash{}(l14_first) != Hash{}(l14_high_first));
+  const DirectionTester<1> l14_first_upper{Direction<1>::upper_xi(), l14_first};
+  CHECK(l14_first_upper.direction() == Direction<1>::upper_xi());
+  CHECK(static_cast<const ElementId<1>&>(l14_first_upper) == l14_first);
+  CHECK(Hash{}(l14_first_upper) == Hash{}(l14_first));
+
+  // (d) id_of_child reading a nonzero high part, 01|1...1 to 11|1...1 and
+  // 11|1...0; PUP and string round trips with high part 01
+  CHECK(l13_last.id_of_child(0, Side::Upper).segment_id(0) ==
+        SegmentId{14, 16383});
+  CHECK(l13_last.id_of_child(0, Side::Lower).segment_id(0) ==
+        SegmentId{14, 16382});
+  // Catches omitting the high-part read in 2D and 3D only. In 1D the checks
+  // above start from high part 01; test_child_across_xi_split starts from
+  // 00 in its 2D and 3D cases
+  CHECK(ElementId<2>{0, {{{13, 8191}, {1, 1}}}}
+            .id_of_child(0, Side::Upper)
+            .segment_ids() == std::array<SegmentId, 2>{{{14, 16383}, {1, 1}}});
+  CHECK(ElementId<3>{0, {{{13, 8191}, {1, 1}, {2, 3}}}}
+            .id_of_child(0, Side::Upper)
+            .segment_ids() ==
+        std::array<SegmentId, 3>{{{14, 16383}, {1, 1}, {2, 3}}});
+  CHECK(serialize_and_deserialize(l13_last) == l13_last);
+  CHECK(ElementId<1>(get_output(l13_last)) == l13_last);
 }
 }  // namespace
 
@@ -439,6 +715,13 @@ SPECTRE_TEST_CASE("Unit.Domain.Structure.ElementId", "[Domain][Unit]") {
   test_serialization<2>();
   test_serialization<3>();
   test_to_short_id();
+  test_extreme_values<1>();
+  test_extreme_values<2>();
+  test_extreme_values<3>();
+  test_child_across_xi_split<1>();
+  test_child_across_xi_split<2>();
+  test_child_across_xi_split<3>();
+  test_xi_high_part_sites();
 #ifdef SPECTRE_DEBUG
   CHECK_THROWS_WITH(
       ElementId<1>(two_to_the(ElementId<1>::block_id_bits)),
@@ -446,5 +729,28 @@ SPECTRE_TEST_CASE("Unit.Domain.Structure.ElementId", "[Domain][Unit]") {
   CHECK_THROWS_WITH(
       ElementId<1>(0, {{{0, 0}}}, two_to_the(ElementId<1>::grid_index_bits)),
       Catch::Matchers::ContainsSubstring("Grid index out of bounds"));
+  // The string constructor checks the parsed block id and grid index before
+  // storing them; checked after, the truncated field passed the check and
+  // [B2048,(L0I0)] became block 0
+  static_assert(ElementId<1>::block_id_bits == 11 and
+                ElementId<1>::grid_index_bits == 4);
+  CHECK_THROWS_WITH(
+      ElementId<1>(std::string{"[B2048,(L0I0)]"}),
+      Catch::Matchers::ContainsSubstring("Block id out of bounds"));
+  CHECK_THROWS_WITH(
+      ElementId<1>(std::string{"[B0,(L0I0),G16]"}),
+      Catch::Matchers::ContainsSubstring("Grid index out of bounds"));
+  // A refinement level beyond the maximum would be silently truncated by the
+  // compact segment ID bitfields, so it must be rejected in every dimension.
+  const size_t too_fine = ElementId<3>::max_refinement_level + 1;
+  CHECK_THROWS_WITH(
+      ElementId<1>(0, {{{too_fine, 0}}}, 0),
+      Catch::Matchers::ContainsSubstring("Refinement level out of bounds"));
+  CHECK_THROWS_WITH(
+      ElementId<2>(0, {{{0, 0}, {too_fine, 0}}}, 0),
+      Catch::Matchers::ContainsSubstring("Refinement level out of bounds"));
+  CHECK_THROWS_WITH(
+      ElementId<3>(0, {{{0, 0}, {0, 0}, {too_fine, 0}}}, 0),
+      Catch::Matchers::ContainsSubstring("Refinement level out of bounds"));
 #endif
 }
