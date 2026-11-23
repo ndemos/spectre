@@ -23,6 +23,7 @@
 #include "DataStructures/Tensor/EagerMath/RaiseOrLowerIndex.hpp"
 #include "DataStructures/Tensor/IndexType.hpp"
 #include "Domain/Creators/BinaryCompactObject.hpp"
+#include "Domain/Creators/BinaryNeutronStars.hpp"
 #include "Domain/Creators/Factory3D.hpp"
 #include "Domain/Tags.hpp"
 #include "Evolution/Actions/RunEventsAndDenseTriggers.hpp"
@@ -43,6 +44,7 @@
 #include "Evolution/DgSubcell/ComputeBoundaryTerms.hpp"
 #include "Evolution/DgSubcell/CorrectPackagedData.hpp"
 #include "Evolution/DgSubcell/GetActiveTag.hpp"
+#include "Evolution/DgSubcell/GhostZoneInverseJacobian.hpp"
 #include "Evolution/DgSubcell/NeighborReconstructedFaceSolution.hpp"
 #include "Evolution/DgSubcell/PerssonTci.hpp"
 #include "Evolution/DgSubcell/PrepareNeighborData.hpp"
@@ -613,11 +615,12 @@ struct GhValenciaDivCleanTemplateBase<
                                 control_system::control_system_triggers<
                                     control_systems>>>,
         tmpl::pair<DomainCreator<volume_dim>,
-                   // Currently control systems can only be used with BCO
-                   // domains
+                   // Currently control systems can only be used with BCO or
+                   // BinaryNeutronStars domains
                    tmpl::conditional_t<
                        use_control_systems,
-                       tmpl::list<::domain::creators::BinaryCompactObject>,
+                       tmpl::list<::domain::creators::BinaryCompactObject,
+                                  ::domain::creators::BinaryNeutronStars>,
                        domain_creators<volume_dim>>>,
         tmpl::pair<Event,
                    tmpl::flatten<tmpl::list<
@@ -781,10 +784,16 @@ struct GhValenciaDivCleanTemplateBase<
       Actions::MutateApply<ChangeTimeStepperOrder<system>>,
       tmpl::conditional_t<
           use_dg_subcell,
-          // Note: The primitive variables are computed as part of the TCI.
+          // Note: The primitive variables are computed as part of the TCI, or
+          // by the DG-only mutators on elements that can't use subcell.
           evolution::dg::subcell::Actions::TciAndRollback<
               grmhd::GhValenciaDivClean::subcell::TciOnDgGrid<
-                  tmpl::front<ordered_list_of_primitive_recovery_schemes>>>,
+                  tmpl::front<ordered_list_of_primitive_recovery_schemes>>,
+              tmpl::list<
+                  grmhd::GhValenciaDivClean::subcell::
+                      FixConservativesAndComputePrims<
+                          ordered_list_of_primitive_recovery_schemes, system,
+                          domain::Tags::Coordinates<3, Frame::Inertial>>>>,
           tmpl::list<>>,
       Actions::MutateApply<CleanHistory<system>>,
       Actions::MutateApply<evolution::dg::CleanMortarHistory<volume_dim>>,
@@ -856,14 +865,19 @@ struct GhValenciaDivCleanTemplateBase<
                           dg_step_actions>;
 
   using initialization_actions = tmpl::list<
-      Initialization::Actions::InitializeItems<
-          Initialization::TimeStepping<derived_metavars, TimeStepper,
-                                       use_control_systems, true>,
-          evolution::dg::Initialization::Domain<derived_metavars,
-                                                use_control_systems>>,
+      Initialization::Actions::InitializeItems<tmpl::flatten<
+          tmpl::list<Initialization::TimeStepping<derived_metavars, TimeStepper,
+                                                  use_control_systems, true>,
+                     evolution::dg::Initialization::Domain<
+                         derived_metavars, use_control_systems>>>>,
       Initialization::Actions::ConservativeSystem<system>,
-      Initialization::Actions::InitializeItems<
-          Initialization::TimeStepperHistory<system>>,
+      Initialization::Actions::InitializeItems<tmpl::flatten<tmpl::list<
+          Initialization::TimeStepperHistory<system>,
+          tmpl::conditional_t<use_dg_subcell,
+                              evolution::dg::subcell::GhostZoneInverseJacobian<
+                                  volume_dim, grmhd::GhValenciaDivClean::fd::
+                                                  Tags::Reconstructor<system>>,
+                              tmpl::list<>>>>>,
       // This conditional is untested and probably doesn't work if
       // `use_dg_subcell` is `false`
       tmpl::conditional_t<

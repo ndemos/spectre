@@ -79,3 +79,19 @@ add_standalone_test(
   "Unit.Executables.MinimalExample"
   EXECUTABLE "MinimalExample"
 )
+
+add_standalone_test(
+  "Unit.Executables.PiMonteCarloStarter"
+  EXECUTABLE "PiMonteCarloStarter"
+  )
+
+add_test_library(
+  Test_ExportEquationOfStateForRotNS
+  "Test_DumpRotNSEos.cpp"
+  )
+
+target_link_libraries(
+  Test_ExportEquationOfStateForRotNS
+  PRIVATE
+  DumpRotNSEos
+  )

@@ -125,18 +125,24 @@ std::optional<std::array<double, 3>> CylindricalSphericalShell::inverse(
       // Root not bracketed: the point lies outside the axial range of the map.
       return std::nullopt;
     }
+  } else if (equal_within_roundoff(f_lower, 0.0, 1.0e-13, f_scale)) {
+    beta = 0.0;
+  } else if (equal_within_roundoff(f_upper, 0.0, 1.0e-13, f_scale)) {
+    beta = 1.0;
   } else {
     constexpr double tol = 1.0e-15;
-    try {
-      beta = RootFinder::toms748(f_beta, 0.0, 1.0, f_lower, f_upper, tol, tol);
+    const auto root =
+        RootFinder::toms748(f_beta, 0.0, 1.0, f_lower, f_upper, tol, tol);
+    if (not root.has_value()) {
       // LCOV_EXCL_START
-    } catch (std::exception&) {
       ERROR(
           "CylindricalSphericalShell::inverse: toms748 failed after "
           "bracketing: F(0)="
-          << f_lower << " F(1)=" << f_upper);
+          << f_lower << " F(1)=" << f_upper << "\n"
+          << root.error());
       // LCOV_EXCL_STOP
     }
+    beta = root.value();
   }
 
   const double x_o = x_outer_lower_ + beta * delta_x_outer;

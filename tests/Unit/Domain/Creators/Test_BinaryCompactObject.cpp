@@ -154,14 +154,15 @@ void test_connectivity() {
           multiple_outer_shells
               ? std::vector<double>{0.5 * (envelope_radius + outer_radius)}
               : std::vector<double>{};
-      std::unordered_map<std::string, std::array<size_t, 3>> refinement{
-          {"ObjectAShell", {{1, 1, 1}}},
-          {"ObjectACube", {{1, 1, 1}}},
-          {"ObjectBShell", {{1, 1, 1}}},
-          {"ObjectBCube", {{1, 1, 1}}},
-          {"Envelope", {{1, 1, 1}}},
-          // Add some radial refinement in outer shell
-          {"OuterShell0", {{1, 1, 4}}}};
+      std::unordered_map<std::string,
+                         std::variant<std::array<size_t, 3>, size_t>>
+          refinement{{"ObjectAShell", std::array<size_t, 3>{{1, 1, 1}}},
+                     {"ObjectACube", std::array<size_t, 3>{{1, 1, 1}}},
+                     {"ObjectBShell", std::array<size_t, 3>{{1, 1, 1}}},
+                     {"ObjectBCube", std::array<size_t, 3>{{1, 1, 1}}},
+                     {"Envelope", std::array<size_t, 3>{{1, 1, 1}}},
+                     // Add some radial refinement in outer shell
+                     {"OuterShell0", std::array<size_t, 3>{{1, 1, 4}}}};
       if (multiple_outer_shells) {
         refinement["OuterShell1"] = std::array{1_st, 1_st, 2_st};
       }
@@ -586,12 +587,12 @@ void test_bns_domain_with_cubes() {
   const auto radial_distribution_outer_shell = Distribution::Inverse;
   constexpr bool with_boundary_conditions = true;
 
-  std::unordered_map<std::string, std::array<size_t, 3>> refinement{
-      {"ObjectA", {{1, 1, 1}}},
-      {"ObjectB", {{1, 1, 1}}},
-      {"Envelope", {{1, 1, 1}}},
-      {"OuterShell0", {{1, 1, 4}}},
-      {"OuterShell1", {{1, 1, 2}}}};
+  std::unordered_map<std::string, std::variant<std::array<size_t, 3>, size_t>>
+      refinement{{"ObjectA", std::array<size_t, 3>{{1, 1, 1}}},
+                 {"ObjectB", std::array<size_t, 3>{{1, 1, 1}}},
+                 {"Envelope", std::array<size_t, 3>{{1, 1, 1}}},
+                 {"OuterShell0", std::array<size_t, 3>{{1, 1, 4}}},
+                 {"OuterShell1", std::array<size_t, 3>{{1, 1, 2}}}};
 
   for (const auto cube_scale : cube_scales) {
     const domain::creators::BinaryCompactObject binary_compact_object{
@@ -1551,6 +1552,50 @@ void test_kerr_horizon_conforming() {
   }
 }
 
+void test_log_maps_block_logical_coordinates() {
+  INFO("Locate points near the objects in a domain with log maps");
+  // Similar to the domain of the BBH initial data pipeline. Finding the block
+  // of each point inverts the maps of other blocks, which must not raise
+  // floating-point exceptions, e.g. at the singularity of the log maps.
+  const double inner_radius = 1.;
+  const double outer_radius = 20. / 3.75;
+  const double x_pos = 10.;
+  const domain::creators::BinaryCompactObject domain_creator{
+      Object{inner_radius, outer_radius, x_pos, true, 1., 1.},
+      Object{inner_radius, outer_radius, -x_pos, true, 1., 1.},
+      std::array<double, 2>{{0., 0.}},
+      80.,
+      300.,
+      1.0,
+      0_st,
+      6_st};
+  const auto domain = domain_creator.create_domain();
+  const size_t num_points = 10;
+  MAKE_GENERATOR(gen);
+  std::uniform_real_distribution<double> dist_radius{0., 2. * outer_radius};
+  std::uniform_real_distribution<double> dist_theta{0., M_PI};
+  std::uniform_real_distribution<double> dist_phi{0., 2. * M_PI};
+  for (const double center : {x_pos, -x_pos}) {
+    CAPTURE(center);
+    const auto radius = make_with_random_values<DataVector>(
+        make_not_null(&gen), make_not_null(&dist_radius), num_points);
+    const auto theta = make_with_random_values<DataVector>(
+        make_not_null(&gen), make_not_null(&dist_theta), num_points);
+    const auto phi = make_with_random_values<DataVector>(
+        make_not_null(&gen), make_not_null(&dist_phi), num_points);
+    tnsr::I<DataVector, 3> x{};
+    get<0>(x) = center + radius * sin(theta) * cos(phi);
+    get<1>(x) = radius * sin(theta) * sin(phi);
+    get<2>(x) = radius * cos(theta);
+    const auto x_logical = block_logical_coordinates(domain, x);
+    for (size_t i = 0; i < num_points; ++i) {
+      CAPTURE(radius[i]);
+      // Points inside the excision are not in the domain, all others are
+      CHECK(x_logical[i].has_value() == (radius[i] > inner_radius));
+    }
+  }
+}
+
 }  // namespace
 
 // [[TimeOut, 45]]
@@ -1567,4 +1612,5 @@ SPECTRE_TEST_CASE("Unit.Domain.Creators.BinaryCompactObject",
   test_parse_errors();
   test_spherical_harmonics_wavezone();
   test_kerr_horizon_conforming();
+  test_log_maps_block_logical_coordinates();
 }

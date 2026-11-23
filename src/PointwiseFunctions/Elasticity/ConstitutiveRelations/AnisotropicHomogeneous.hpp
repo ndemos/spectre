@@ -5,7 +5,6 @@
 
 #include <array>
 #include <cstddef>
-#include <limits>
 #include <memory>
 #include <pup.h>
 
@@ -53,10 +52,7 @@ namespace Elasticity::ConstitutiveRelations {
  * positive-definiteness check is relative: the smallest eigenvalue of \f$C\f$
  * must exceed `min_relative_eigenvalue` times its largest eigenvalue, so the
  * check does not depend on the units of \f$C\f$ and numerically singular
- * matrices are rejected deterministically. A matrix with a non-positive
- * eigenvalue is reported as unstable; a positive definite matrix below the
- * ratio is reported as too ill-conditioned. All entries must be finite.
- * All checks run in all build types.
+ * matrices are rejected deterministically.
  */
 class AnisotropicHomogeneous : public ConstitutiveRelation<3> {
  public:
@@ -84,11 +80,7 @@ class AnisotropicHomogeneous : public ConstitutiveRelation<3> {
       "notation. The matrix entries are in the same units of stress as the "
       "other materials (e.g. GPa in the input files)."};
 
-  AnisotropicHomogeneous() {
-    for (auto& row : stiffness_) {
-      row.fill(std::numeric_limits<double>::signaling_NaN());
-    }
-  }
+  AnisotropicHomogeneous();
 
   AnisotropicHomogeneous(const AnisotropicHomogeneous&) = default;
   AnisotropicHomogeneous& operator=(const AnisotropicHomogeneous&) = default;

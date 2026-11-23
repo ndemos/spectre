@@ -125,9 +125,9 @@ namespace ControlErrors {
  * in the smoothing `TimescaleTuner` is then updated using the difference
  * between the averaged and un-averaged coefficient (and its time derivative).
  *
- * In addition to calculating the control error, if the
- * `control_system::Tags::WriteDataToDisk` tag inside the
- * `Parallel::GlobalCache` is true, then a diagnostic file named
+ * In addition to calculating the control error, if the name of this control
+ * system is in the `control_system::Tags::WriteDataToDisk` tag inside the
+ * `Parallel::GlobalCache`, then a diagnostic file named
  * `Diagnostics.dat` is also written to the same group that
  * `control_system::write_components_to_disk` would write the standard control
  * system output (`/ControlSystems/Size/`). The columns of this diagnostic file
@@ -507,18 +507,13 @@ struct Size : tt::ConformsTo<protocols::ControlError> {
 
       horizon_00 = averaged_horizon_coef_at_average_time.value()[0][0];
       dt_horizon_00 = averaged_horizon_coef_at_average_time.value()[1][0];
-      const double d2t_horizon_00 =
-          averaged_horizon_coef_at_average_time.value()[2][0];
 
-      // Taylor expand from the averaged time t_avg to the current time t,
-      // where time_diff = t - t_avg:
-      // h(t) = h(t_avg) + time_diff * h'(t_avg)
-      //        + 0.5 * time_diff^2 * h''(t_avg),
-      // h'(t) = h'(t_avg) + time_diff * h''(t_avg).
+      // Correct for the offset between the averaged time t_avg and
+      // the current time t.  The second derivative from the averager
+      // is very noisy, so we only include the first-derivative
+      // correction.
       const double time_diff = time - averaged_time;
-      horizon_00 +=
-          time_diff * dt_horizon_00 + 0.5 * square(time_diff) * d2t_horizon_00;
-      dt_horizon_00 += time_diff * d2t_horizon_00;
+      horizon_00 += time_diff * dt_horizon_00;
 
       // The "control error" for the averaged horizon coefficients is just the
       // averaged coefs minus the actual coef and time derivative from
@@ -614,7 +609,8 @@ struct Size : tt::ConformsTo<protocols::ControlError> {
 
     state_history_.store(time, info_, error_diagnostics.control_error_args);
 
-    if (Parallel::get<control_system::Tags::WriteDataToDisk>(cache)) {
+    if (Parallel::get<control_system::Tags::WriteDataToDisk>(cache).contains(
+            function_of_time_name)) {
       auto& observer_writer_proxy = Parallel::get_parallel_component<
           observers::ObserverWriter<Metavariables>>(cache);
 

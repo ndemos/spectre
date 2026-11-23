@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <limits>
 #include <random>
+#include <utility>
 
 #include "DataStructures/DataVector.hpp"
 #include "DataStructures/Tensor/EagerMath/DeterminantAndInverse.hpp"
@@ -27,6 +28,7 @@
 #include "PointwiseFunctions/Hydro/EquationsOfState/HybridEos.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/IdealFluid.hpp"
 #include "PointwiseFunctions/Hydro/EquationsOfState/PolytropicFluid.hpp"
+#include "Utilities/ConstantExpressions.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/MakeWithValue.hpp"
 #include "Utilities/TMPL.hpp"
@@ -407,6 +409,150 @@ void test_primitive_from_conservative_known(const DataVector& used_for_size) {
   }
 }
 
+// Check that a state whose momentum density is above the cap in KastaunEtAl
+// recovers the same primitives as the same state scaled down to the cap
+void test_kastaun_momentum_cap(const DataVector& used_for_size) {
+  auto spatial_metric =
+      make_with_value<tnsr::ii<DataVector, 3>>(used_for_size, 0.0);
+  get<0, 0>(spatial_metric) = 1.0;
+  get<1, 1>(spatial_metric) = 1.0;
+  get<2, 2>(spatial_metric) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const Scalar<DataVector> sqrt_det_spatial_metric =
+      Scalar<DataVector>{sqrt(get(det_and_inv.first))};
+
+  const double tau = 9.0;
+  const auto tilde_d = make_with_value<Scalar<DataVector>>(used_for_size, 1.0);
+  const auto tilde_ye = make_with_value<Scalar<DataVector>>(used_for_size, 0.1);
+  const auto tilde_tau =
+      make_with_value<Scalar<DataVector>>(used_for_size, tau);
+  const auto tilde_phi =
+      make_with_value<Scalar<DataVector>>(used_for_size, 0.0);
+  // unit magnetic field at 45 degrees to the momentum density
+  auto tilde_b = make_with_value<tnsr::I<DataVector, 3>>(used_for_size, 0.0);
+  get<0>(tilde_b) = sqrt(0.5);
+  get<1>(tilde_b) = sqrt(0.5);
+
+  const double cutoff_d_for_inversion = 0.0;
+  const double density_when_skipping_inversion = 0.0;
+  const double kastaun_max_lorentz = 10.0;
+  const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions
+      primitive_from_conservative_options(cutoff_d_for_inversion,
+                                          density_when_skipping_inversion,
+                                          kastaun_max_lorentz);
+  // momentum density cap for D = 1, tau = 9 and the maximum Lorentz factor
+  const double v_0_squared = 1.0 - 1.0 / square(kastaun_max_lorentz);
+  const double momentum_density_squared_cap =
+      4.0 * v_0_squared * square(1.0 + tau) / square(1.0 + v_0_squared);
+  const EquationsOfState::Equilibrium3D ideal_fluid{
+      EquationsOfState::IdealFluid<true>{4.0 / 3.0}};
+
+  const size_t number_of_points = used_for_size.size();
+  const auto recover = [&](const double momentum_density_squared) {
+    auto tilde_s = make_with_value<tnsr::i<DataVector, 3>>(used_for_size, 0.0);
+    get<0>(tilde_s) = sqrt(momentum_density_squared);
+    Scalar<DataVector> rest_mass_density(number_of_points);
+    Scalar<DataVector> electron_fraction(number_of_points);
+    Scalar<DataVector> specific_internal_energy(number_of_points);
+    Scalar<DataVector> temperature(number_of_points);
+    tnsr::I<DataVector, 3> spatial_velocity(number_of_points);
+    tnsr::I<DataVector, 3> magnetic_field(number_of_points);
+    Scalar<DataVector> divergence_cleaning_field(number_of_points);
+    Scalar<DataVector> lorentz_factor(number_of_points);
+    // need to zero-initialize pressure because the recovery schemes assume it
+    // is not nan
+    Scalar<DataVector> pressure(number_of_points, 0.0);
+    grmhd::ValenciaDivClean::PrimitiveFromConservative<tmpl::list<
+        grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>>::
+        apply(make_not_null(&rest_mass_density),
+              make_not_null(&electron_fraction),
+              make_not_null(&specific_internal_energy),
+              make_not_null(&spatial_velocity), make_not_null(&magnetic_field),
+              make_not_null(&divergence_cleaning_field),
+              make_not_null(&lorentz_factor), make_not_null(&pressure),
+              make_not_null(&temperature), tilde_d, tilde_ye, tilde_tau,
+              tilde_s, tilde_b, tilde_phi, spatial_metric, inv_spatial_metric,
+              sqrt_det_spatial_metric, ideal_fluid,
+              primitive_from_conservative_options);
+    return std::make_pair(rest_mass_density, lorentz_factor);
+  };
+  const auto [expected_rest_mass_density, expected_lorentz_factor] =
+      recover(momentum_density_squared_cap);
+  const auto [rest_mass_density, lorentz_factor] =
+      recover(4.0 * momentum_density_squared_cap);
+
+  INFO("test the momentum density cap in KastaunEtAl");
+  const Approx larger_approx =
+      Approx::custom().epsilon(std::numeric_limits<double>::epsilon() * 1.e8);
+  CHECK_ITERABLE_CUSTOM_APPROX(expected_rest_mass_density, rest_mass_density,
+                               larger_approx);
+  CHECK_ITERABLE_CUSTOM_APPROX(expected_lorentz_factor, lorentz_factor,
+                               larger_approx);
+}
+
+// Magnetic energy exceeds tau, so the root lies at the upper end of the
+// bracket and roundoff decides whether it is bracketed.
+void test_kastaun_root_at_upper_bracket(const DataVector& used_for_size) {
+  INFO("test KastaunEtAl with the root at the upper end of the bracket");
+  auto spatial_metric =
+      make_with_value<tnsr::ii<DataVector, 3>>(used_for_size, 0.0);
+  get<0, 0>(spatial_metric) = 1.0;
+  get<1, 1>(spatial_metric) = 1.0;
+  get<2, 2>(spatial_metric) = 1.0;
+  const auto det_and_inv = determinant_and_inverse(spatial_metric);
+  const auto& inv_spatial_metric = det_and_inv.second;
+  const Scalar<DataVector> sqrt_det_spatial_metric =
+      Scalar<DataVector>{sqrt(get(det_and_inv.first))};
+
+  const auto tilde_d =
+      make_with_value<Scalar<DataVector>>(used_for_size, 1.0e-4);
+  const auto tilde_ye = make_with_value<Scalar<DataVector>>(used_for_size, 0.5);
+  const auto tilde_tau =
+      make_with_value<Scalar<DataVector>>(used_for_size, -1.0);
+  const auto tilde_phi =
+      make_with_value<Scalar<DataVector>>(used_for_size, 0.0);
+  auto tilde_b = make_with_value<tnsr::I<DataVector, 3>>(used_for_size, 0.0);
+  get<0>(tilde_b) = 0.1;
+  auto tilde_s = make_with_value<tnsr::i<DataVector, 3>>(used_for_size, 0.0);
+  get<0>(tilde_s) = -2.0;
+  get<1>(tilde_s) = 7.0;
+
+  const grmhd::ValenciaDivClean::PrimitiveFromConservativeOptions
+      primitive_from_conservative_options(1.0e-12, 1.0e-12, 10.0);
+  const EquationsOfState::Equilibrium3D ideal_fluid{
+      EquationsOfState::IdealFluid<true>{4.0 / 3.0}};
+
+  const size_t number_of_points = used_for_size.size();
+  Scalar<DataVector> rest_mass_density(number_of_points);
+  Scalar<DataVector> electron_fraction(number_of_points);
+  Scalar<DataVector> specific_internal_energy(number_of_points);
+  Scalar<DataVector> temperature(number_of_points);
+  tnsr::I<DataVector, 3> spatial_velocity(number_of_points);
+  tnsr::I<DataVector, 3> magnetic_field(number_of_points);
+  Scalar<DataVector> divergence_cleaning_field(number_of_points);
+  Scalar<DataVector> lorentz_factor(number_of_points);
+  Scalar<DataVector> pressure(number_of_points, 0.0);
+  const bool success = grmhd::ValenciaDivClean::PrimitiveFromConservative<
+      tmpl::list<
+          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>,
+      false>::apply(make_not_null(&rest_mass_density),
+                    make_not_null(&electron_fraction),
+                    make_not_null(&specific_internal_energy),
+                    make_not_null(&spatial_velocity),
+                    make_not_null(&magnetic_field),
+                    make_not_null(&divergence_cleaning_field),
+                    make_not_null(&lorentz_factor), make_not_null(&pressure),
+                    make_not_null(&temperature), tilde_d, tilde_ye, tilde_tau,
+                    tilde_s, tilde_b, tilde_phi, spatial_metric,
+                    inv_spatial_metric, sqrt_det_spatial_metric, ideal_fluid,
+                    primitive_from_conservative_options);
+  REQUIRE(success);
+  CHECK_ITERABLE_APPROX(get(specific_internal_energy),
+                        DataVector(number_of_points, 0.0));
+  CHECK(max(get(lorentz_factor)) <= 10.0 * (1.0 + 1.0e-12));
+}
+
 }  // namespace
 
 SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.PrimitiveFromConservative",
@@ -425,6 +571,8 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.PrimitiveFromConservative",
       grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::PalenzuelaEtAl>>(dv);
   test_primitive_from_conservative_known<tmpl::list<
       grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>>(dv);
+  test_kastaun_momentum_cap(dv);
+  test_kastaun_root_at_upper_bracket(dv);
   test_primitive_from_conservative_known<
       tmpl::list<
           grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAlHydro>,
@@ -459,38 +607,46 @@ SPECTRE_TEST_CASE("Unit.GrMhd.ValenciaDivClean.PrimitiveFromConservative",
       tmpl::list<
           grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAlHydro>,
       false>(&generator, wrapped_ideal_fluid, dv);
-  INFO("3D EoS Kastaun");
-  test_primitive_from_conservative_random<
-      tmpl::list<
-          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>,
-      true>(&generator, wrapped_3d_polytrope, dv);
-  test_primitive_from_conservative_random<
-      tmpl::list<
-          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>,
-      false>(&generator, wrapped_3d_polytrope, dv);
-  INFO("3D EoS Kastaun Hydro");
-  test_primitive_from_conservative_random<
-      tmpl::list<
-          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAlHydro>,
-      false>(&generator, wrapped_3d_polytrope, dv);
-  INFO("3D EoS Newman-Hamlin");
-  test_primitive_from_conservative_random<
-      tmpl::list<
-          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::NewmanHamlin>,
-      true>(&generator, wrapped_3d_polytrope, dv);
-  test_primitive_from_conservative_random<
-      tmpl::list<
-          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::NewmanHamlin>,
-      false>(&generator, wrapped_3d_polytrope, dv);
-  INFO("3D EoS Palenzuela");
-  test_primitive_from_conservative_random<
-      tmpl::list<
-          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::PalenzuelaEtAl>,
-      true>(&generator, wrapped_3d_polytrope, dv);
-  test_primitive_from_conservative_random<
-      tmpl::list<
-          grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::PalenzuelaEtAl>,
-      false>(&generator, wrapped_3d_polytrope, dv);
+  {
+    INFO("3D EoS Kastaun");
+    test_primitive_from_conservative_random<
+        tmpl::list<
+            grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>,
+        true>(&generator, wrapped_3d_polytrope, dv);
+    test_primitive_from_conservative_random<
+        tmpl::list<
+            grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>,
+        false>(&generator, wrapped_3d_polytrope, dv);
+  }
+  {
+    INFO("3D EoS Kastaun Hydro");
+    test_primitive_from_conservative_random<
+        tmpl::list<grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::
+                       KastaunEtAlHydro>,
+        false>(&generator, wrapped_3d_polytrope, dv);
+  }
+  {
+    INFO("3D EoS Newman-Hamlin");
+    test_primitive_from_conservative_random<
+        tmpl::list<
+            grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::NewmanHamlin>,
+        true>(&generator, wrapped_3d_polytrope, dv);
+    test_primitive_from_conservative_random<
+        tmpl::list<
+            grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::NewmanHamlin>,
+        false>(&generator, wrapped_3d_polytrope, dv);
+  }
+  {
+    INFO("3D EoS Palenzuela");
+    test_primitive_from_conservative_random<
+        tmpl::list<
+            grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::PalenzuelaEtAl>,
+        true>(&generator, wrapped_3d_polytrope, dv);
+    test_primitive_from_conservative_random<
+        tmpl::list<
+            grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::PalenzuelaEtAl>,
+        false>(&generator, wrapped_3d_polytrope, dv);
+  }
 
   test_potentially_eos_dependent_primitive_corrections<tmpl::list<
       grmhd::ValenciaDivClean::PrimitiveRecoverySchemes::KastaunEtAl>>(

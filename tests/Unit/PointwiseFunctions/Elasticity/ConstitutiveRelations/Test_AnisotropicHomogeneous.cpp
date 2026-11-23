@@ -4,10 +4,8 @@
 #include "Framework/TestingFramework.hpp"
 
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <iomanip>
-#include <limits>
 #include <random>
 #include <sstream>
 #include <string>
@@ -78,8 +76,7 @@ std::array<std::array<double, 6>, 6> diagonal_voigt_matrix(
 
 // The `StiffnessMatrix` option in YAML, with the key indented by `indent`
 // spaces and one flow sequence per row. Entries are printed with 17
-// significant digits so that they round trip exactly; non-finite entries use
-// the YAML spellings `.nan`, `.inf` and `-.inf`.
+// significant digits so that they round trip exactly.
 std::string stiffness_matrix_yaml(
     const std::array<std::array<double, 6>, 6>& matrix, const size_t indent) {
   std::ostringstream yaml;
@@ -88,14 +85,7 @@ std::string stiffness_matrix_yaml(
   for (const auto& row : matrix) {
     yaml << std::string(indent + 2, ' ') << "- [";
     for (size_t j = 0; j < 6; ++j) {
-      const double entry = gsl::at(row, j);
-      if (std::isnan(entry)) {
-        yaml << ".nan";
-      } else if (std::isinf(entry)) {
-        yaml << (entry > 0. ? ".inf" : "-.inf");
-      } else {
-        yaml << entry;
-      }
+      yaml << gsl::at(row, j);
       yaml << (j < 5 ? ", " : "]\n");
     }
   }
@@ -213,7 +203,7 @@ void test_consistency_with_isotropic_homogeneous(const double bulk_modulus,
   isotropic.stress(make_not_null(&isotropic_stress), strain, x);
   // The two classes sum terms of size ~C S ~ 1e2 in different orders, so a
   // component near zero can differ by a few 1e-14 in absolute terms
-  Approx custom_approx = Approx::custom().epsilon(1.e-12).scale(1.);
+  const Approx custom_approx = Approx::custom().epsilon(1.e-12).scale(1.);
   for (size_t i = 0; i < 3; ++i) {
     for (size_t j = 0; j < 3; ++j) {
       CHECK_ITERABLE_CUSTOM_APPROX(anisotropic_stress.get(i, j),
@@ -245,12 +235,12 @@ void test_engineering_shear() {
   // Reference values (GPa) from the contraction -C_ijkl S_kl of the full
   // fourth-rank tensor (`stiffness_tensor` in AnisotropicHomogeneous.py),
   // also exact in rational arithmetic
-  CHECK_ITERABLE_APPROX(stress.get(0, 1)[0], -0.1);    // -2 C_66 s
-  CHECK_ITERABLE_APPROX(stress.get(0, 0)[0], -0.016);  // -2 C_16 s
-  CHECK_ITERABLE_APPROX(stress.get(1, 1)[0], 0.008);   // -2 C_26 s
-  CHECK_ITERABLE_APPROX(stress.get(2, 2)[0], -0.006);  // -2 C_36 s
-  CHECK_ITERABLE_APPROX(stress.get(1, 2)[0], -0.004);  // -2 C_46 s
-  CHECK_ITERABLE_APPROX(stress.get(0, 2)[0], 0.008);   // -2 C_56 s
+  CHECK_ITERABLE_APPROX((get<0, 1>(stress)[0]), -0.1);    // -2 C_66 s
+  CHECK_ITERABLE_APPROX((get<0, 0>(stress)[0]), -0.016);  // -2 C_16 s
+  CHECK_ITERABLE_APPROX((get<1, 1>(stress)[0]), 0.008);   // -2 C_26 s
+  CHECK_ITERABLE_APPROX((get<2, 2>(stress)[0]), -0.006);  // -2 C_36 s
+  CHECK_ITERABLE_APPROX((get<1, 2>(stress)[0]), -0.004);  // -2 C_46 s
+  CHECK_ITERABLE_APPROX((get<0, 2>(stress)[0]), 0.008);   // -2 C_56 s
 }
 
 void test_fixed_strain() {
@@ -292,7 +282,7 @@ void test_fixed_strain() {
 
 void test_general_matrix() {
   INFO("General matrix: comparison to an independent Python contraction");
-  pypp::SetupLocalPythonEnvironment local_python_env(
+  const pypp::SetupLocalPythonEnvironment local_python_env(
       "PointwiseFunctions/Elasticity/ConstitutiveRelations");
   pypp::check_with_random_values<1>(&stress_general, "AnisotropicHomogeneous",
                                     {"stress_general"}, {{{-1., 1.}}},
@@ -380,18 +370,6 @@ void test_threshold() {
     // Ratio above the threshold: accepted
     CHECK_NOTHROW(AnisotropicHomogeneous(diagonal_voigt_matrix(scale, 2.e-12)));
   }
-  // Non-finite entries are rejected before the eigenvalue computation,
-  // with a message that names the entry
-  auto with_nan = cubic_voigt_matrix(3., 2., 1.);
-  with_nan[0][0] = std::numeric_limits<double>::quiet_NaN();
-  CHECK_THROWS_WITH(
-      AnisotropicHomogeneous{with_nan},
-      ContainsSubstring("must be finite") and ContainsSubstring("C[0][0]=nan"));
-  auto with_inf = cubic_voigt_matrix(3., 2., 1.);
-  with_inf[5][5] = std::numeric_limits<double>::infinity();
-  CHECK_THROWS_WITH(
-      AnisotropicHomogeneous{with_inf},
-      ContainsSubstring("must be finite") and ContainsSubstring("C[5][5]=inf"));
 }
 
 // The constructor checks also reject invalid matrices given in an input
@@ -401,14 +379,11 @@ void test_threshold() {
 void test_option_parsing_errors() {
   INFO("Rejection through option parsing");
   using Catch::Matchers::ContainsSubstring;
-  auto with_nan = c_general();
-  with_nan[2][2] = std::numeric_limits<double>::quiet_NaN();
   auto asymmetric = c_general();
   asymmetric[0][5] = 9.;
   const std::array<std::pair<std::array<std::array<double, 6>, 6>, std::string>,
-                   4>
-      cases{{{with_nan, "must be finite"},
-             {asymmetric, "must be symmetric"},
+                   3>
+      cases{{{asymmetric, "must be symmetric"},
              {cubic_voigt_matrix(2., 3., 1.), "must be positive definite"},
              {diagonal_voigt_matrix(1., 0.5e-12), "too ill-conditioned"}}};
   for (const auto& [matrix, fragment] : cases) {

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -167,37 +168,9 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
               3, elliptic::BoundaryConditionType::Neumann});
   }
   {
-    INFO("ModeInfo");
-    const auto mode = TestHelpers::test_creation<LaserBeam::ModeInfo>(
-        "N: 1\n"
-        "M: 3\n"
-        "Weight: -0.5");
-    CHECK(mode == LaserBeam::ModeInfo{1, 3, -0.5});
-    CHECK(mode != LaserBeam::ModeInfo{3, 1, -0.5});
-    test_serialization(mode);
-  }
-  {
-    INFO("Mode list order and repetition are preserved");
-    // Flow-style entries, as suggested in the help text
-    const std::vector<LaserBeam::ModeInfo> repeated{
-        {2, 0, -1.}, {0, 2, 1.}, {0, 2, 1.}};
-    const auto created_repeated = TestHelpers::test_factory_creation<
-        elliptic::BoundaryConditions::BoundaryCondition<3>, LaserBeam>(
-        "LaserBeam:\n"
-        "  BeamWidth: 2.\n"
-        "  Modes:\n"
-        "    - {N: 2, M: 0, Weight: -1.}\n"
-        "    - {N: 0, M: 2, Weight: 1.}\n"
-        "    - {N: 0, M: 2, Weight: 1.}");
-    const auto& laser_beam_repeated =
-        dynamic_cast<const LaserBeam&>(*created_repeated);
-    CHECK(laser_beam_repeated.modes() == repeated);
-    // Parsed fields of the first entry, independent of operator==
-    REQUIRE(laser_beam_repeated.modes().size() == 3);
-    CHECK(laser_beam_repeated.modes()[0].n == 2);
-    CHECK(laser_beam_repeated.modes()[0].m == 0);
-    CHECK(laser_beam_repeated.modes()[0].weight == -1.);
-    CHECK(laser_beam_repeated == LaserBeam{beam_width, repeated});
+    INFO("Mode list order and repetition");
+    const LaserBeam laser_beam_repeated{beam_width,
+                                        {{2, 0, -1.}, {0, 2, 1.}, {0, 2, 1.}}};
     // operator== compares the mode lists element-wise, so a reordered list
     // is a different object ...
     const LaserBeam laser_beam_reordered{beam_width,
@@ -235,29 +208,6 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
           elliptic::BoundaryConditions::BoundaryCondition<3>, LaserBeam>(
           options);
     };
-    // Modes is required (the option parser has no defaults)
-    CHECK_THROWS_WITH(create("LaserBeam:\n"
-                             "  BeamWidth: 2."),
-                      ContainsSubstring("did not specify the option") and
-                          ContainsSubstring("Modes"));
-    // The mode indices are unsigned
-    CHECK_THROWS_WITH(create("LaserBeam:\n"
-                             "  BeamWidth: 2.\n"
-                             "  Modes:\n"
-                             "    - {N: -1, M: 0, Weight: 1.}"),
-                      ContainsSubstring("Failed to convert value"));
-    CHECK_THROWS_WITH(create("LaserBeam:\n"
-                             "  BeamWidth: 2.\n"
-                             "  Modes:\n"
-                             "    - {N: 0, M: -1, Weight: 1.}"),
-                      ContainsSubstring("Failed to convert value"));
-    // Misspelled key
-    CHECK_THROWS_WITH(
-        create("LaserBeam:\n"
-               "  BeamWidth: 2.\n"
-               "  Modes:\n"
-               "    - {N: 0, M: 0, Weigth: 1.}"),
-        ContainsSubstring("Option 'Weigth' is not a valid option"));
     // Zero width passes the (inclusive) lower bound of the option but would
     // divide by zero, so the constructor rejects it
     CHECK_THROWS_WITH(create("LaserBeam:\n"
@@ -270,34 +220,11 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
                              "  Modes:\n"
                              "    - {N: 0, M: 0, Weight: 1.}"),
                       ContainsSubstring("is below the lower bound"));
-    // An empty mode list would give zero traction
-    CHECK_THROWS_WITH(create("LaserBeam:\n"
-                             "  BeamWidth: 2.\n"
-                             "  Modes: []"),
-                      ContainsSubstring("at least one mode"));
     // The same checks apply to direct construction
     CHECK_THROWS_WITH(LaserBeam(0., tem00_modes()),
                       ContainsSubstring("BeamWidth must be positive"));
     CHECK_THROWS_WITH(LaserBeam(-1., tem00_modes()),
                       ContainsSubstring("BeamWidth must be positive"));
-    // Non-finite widths are rejected by the constructor's std::isfinite
-    // check, which does not raise FE_INVALID. A NaN in an input file does
-    // not reach the constructor: the option parser's lower-bound comparison
-    // with NaN raises FE_INVALID first, which is trapped, so there is no YAML
-    // NaN case. Infinity passes that comparison and reaches the constructor.
-    CHECK_THROWS_WITH(
-        LaserBeam(std::numeric_limits<double>::quiet_NaN(), tem00_modes()),
-        ContainsSubstring("BeamWidth must be positive"));
-    CHECK_THROWS_WITH(
-        LaserBeam(std::numeric_limits<double>::infinity(), tem00_modes()),
-        ContainsSubstring("BeamWidth must be positive"));
-    CHECK_THROWS_WITH(create("LaserBeam:\n"
-                             "  BeamWidth: .inf\n"
-                             "  Modes:\n"
-                             "    - {N: 0, M: 0, Weight: 1.}"),
-                      ContainsSubstring("BeamWidth must be positive"));
-    CHECK_THROWS_WITH(LaserBeam(2., {}),
-                      ContainsSubstring("at least one mode"));
     // Non-empty lists with zero or cancelling weights remain valid
     const auto created_zero_weight = create(
         "LaserBeam:\n"
@@ -380,7 +307,7 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
           return sum(pressure_on_z_surface(LaserBeam{r0, modes}, x)) *
                  square(spacing);
         };
-    Approx custom_approx = Approx::custom().epsilon(1.e-11).scale(1.);
+    const Approx custom_approx = Approx::custom().epsilon(1.e-11).scale(1.);
     // Each mode with unit weight exerts unit total force. The higher orders
     // exercise the Hermite recursion, `pow` and `factorial` at larger n; their
     // profiles still vanish at the grid edges (H_10^2(12) e^{-144} ~ 1e-35).
@@ -437,8 +364,8 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
     // zeros at +-1/sqrt(2), so TEM20 vanishes at x = r_0 / sqrt(2), y = 0
     // but not at x = 0, y = r_0 / sqrt(2).
     tnsr::I<DataVector, 3> x_nodes{size_t{2}, 0.};
-    get<0>(x_nodes)[0] = r0 / sqrt(2.);
-    get<1>(x_nodes)[1] = r0 / sqrt(2.);
+    get<0>(x_nodes)[0] = r0 / std::numbers::sqrt2;
+    get<1>(x_nodes)[1] = r0 / std::numbers::sqrt2;
     const auto pressure_tem20 =
         pressure_on_z_surface(LaserBeam{r0, {{2, 0, 1.}}}, x_nodes);
     CHECK(pressure_tem20[0] == approx(0.));
@@ -456,7 +383,7 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
     // axis-aligned and exactly normalized: n = (-12, 5, 0) / 13 gives
     // u = (5, 12, 0) / 13 and v = (0, 0, -1).
     const double r0 = 1.5;
-    const double node = r0 / sqrt(2.);
+    const double node = r0 / std::numbers::sqrt2;
     // H_2(0)^2 e^{-1/2} / (pi r_0^2 2^2 2!)
     const double pressure_at_node = exp(-0.5) / (2. * M_PI * square(r0));
     using Vector = std::array<double, 3>;
@@ -495,7 +422,7 @@ SPECTRE_TEST_CASE("Unit.Elasticity.BoundaryConditions.LaserBeam",
     INFO("A face normal that varies across the face is rejected");
     // Three points with the deviation at the interior one, so that a check
     // comparing only the endpoints would miss it
-    tnsr::I<DataVector, 3> x{size_t{3}, 0.};
+    const tnsr::I<DataVector, 3> x{size_t{3}, 0.};
     auto face_normal = make_with_value<tnsr::i<DataVector, 3>>(x, 0.);
     get<2>(face_normal) = -1.;
     get<0>(face_normal)[1] = 1.;

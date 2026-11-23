@@ -64,6 +64,7 @@
 #include "Time/TimeStepId.hpp"
 #include "Utilities/Algorithm.hpp"
 #include "Utilities/ErrorHandling/Assert.hpp"
+#include "Utilities/ErrorHandling/Error.hpp"
 #include "Utilities/Gsl.hpp"
 #include "Utilities/Literals.hpp"
 #include "Utilities/MakeArray.hpp"
@@ -740,15 +741,15 @@ struct ReceiveDataForReconstruction {
             const DirectionalIdMap<Dim, std::optional<intrp::Irregular<Dim>>>&
                 neighbor_dg_to_fd_interpolants) {
           // Remove neighbor meshes for neighbors that don't exist anymore
-          domain::remove_nonexistent_neighbors(neighbor_mesh, element);
-          domain::remove_nonexistent_neighbors(mesh_for_ghost_data, element);
+          ::domain::remove_nonexistent_neighbors(neighbor_mesh, element);
+          ::domain::remove_nonexistent_neighbors(mesh_for_ghost_data, element);
 
           // Get the next time step id, and also the fluxes data if the neighbor
           // is doing DG.
           for (auto& received_mortar_data : received_data) {
             const auto& mortar_id = received_mortar_data.first;
             ASSERT(element.face_types().at(mortar_id.direction()) !=
-                       domain::FaceType::MultipleNonconforming,
+                       ::domain::FaceType::MultipleNonconforming,
                    "This code needs updating to handle nonconforming blocks");
             try {
               mortar_next_time_step_id->at(mortar_id) =
@@ -796,9 +797,17 @@ struct ReceiveDataForReconstruction {
                    "Found neighbor already inserted in direction "
                        << directional_element_id.direction()
                        << " with ElementId " << directional_element_id.id());
-            ASSERT(boundary_data.ghost_cell_data.has_value(),
-                   "Received subcell data message that does not contain any "
-                   "actual subcell data for reconstruction.");
+            // Neighbors skip sending ghost data only to elements that can
+            // never use subcell (see `prepare_neighbor_data`), so an element
+            // doing FD must always receive it.
+            if (UNLIKELY(not boundary_data.ghost_cell_data.has_value())) {
+              ERROR("Element "
+                    << element.id()
+                    << " received a subcell data message from its neighbor "
+                    << directional_element_id
+                    << " that does not contain any actual subcell data for "
+                       "reconstruction.");
+            }
             // Collect the max/min of u(t^n) for the RDMP as we receive data.
             // This reduces the memory footprint.
 
@@ -818,7 +827,7 @@ struct ReceiveDataForReconstruction {
               // tracked because those elements are forced to remain on DG.
               ASSERT(
                   element.face_types().at(directional_element_id.direction()) ==
-                      domain::FaceType::MultipleNonconforming,
+                      ::domain::FaceType::MultipleNonconforming,
                   "NeighborTciDecisions does not contain the neighbor ("
                       << directional_element_id.direction() << ", "
                       << directional_element_id.id()

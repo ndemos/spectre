@@ -394,7 +394,7 @@ void test_bulk_shear_near_pure_dilatation() {
                                              strain, stress);
   const double expected_shear = 13. * std::ldexp(1., -24);
   CHECK_ITERABLE_APPROX(get(bulk_energy), DataVector(num_points, 1.35e9));
-  Approx relative_approx = Approx::custom().epsilon(1.e-6).scale(0.);
+  const Approx relative_approx = Approx::custom().epsilon(1.e-6).scale(0.);
   CHECK_ITERABLE_CUSTOM_APPROX(get(shear_energy),
                                DataVector(num_points, expected_shear),
                                relative_approx);
@@ -415,7 +415,7 @@ void test_bulk_shear_near_pure_dilatation() {
 // T^ab = -2 c_44 S_ab for a != b. Hence Sigma = -(c_11 + 2 c_12) Theta and
 // s^aa = -(c_11 - c_12) e_aa, so
 //   U_bulk = -Theta Sigma / 6 = (c_11 + 2 c_12) Theta^2 / 6,
-//   U_shear = (c_11 - c_12) / 2 sum_a e_aa^2 + 2 c_44 sum_{a<b} S_ab^2.
+//   U_shear = (c_11 - c_12) / 2 sum_a e_aa^2 + 2 c_44 sum_{b>a} S_ab^2.
 // Unlike the isotropic case, the diagonal and off-diagonal deviatoric parts
 // have different moduli (c_11 - c_12 = 64.56, 2 c_44 = 118.3). NumPy
 // reproduces both closed forms from a fourth-rank cubic stiffness tensor to
@@ -458,7 +458,7 @@ void test_bulk_shear_cubic() {
       0.5 * (c_11 - c_12) * diagonal_square + 2. * c_44 * off_diagonal_square;
   // Densities up to ~1e2 GPa for strains in [-1, 1); the classes sum terms in
   // different orders, so the default 2.2e-14 could be hit
-  Approx custom_approx = Approx::custom().epsilon(1.e-12).scale(1.);
+  const Approx custom_approx = Approx::custom().epsilon(1.e-12).scale(1.);
   CHECK_ITERABLE_CUSTOM_APPROX(get(bulk_energy), expected_bulk, custom_approx);
   CHECK_ITERABLE_CUSTOM_APPROX(get(shear_energy), expected_shear,
                                custom_approx);

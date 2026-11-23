@@ -8,6 +8,8 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "ControlSystem/Averager.hpp"
@@ -389,8 +391,9 @@ void test_size_error_one_step(
                                                    std::array{0.0, 0.0, 0.0}},
                                                {}}}}};
     Parallel::GlobalCache<Metavars> cache{
-        {std::move(functions_of_time), std::move(domain), false,
-         ::Verbosity::Silent, "", "", std::vector<std::string>{}}};
+        {std::move(functions_of_time), std::move(domain),
+         std::unordered_set<std::string>{}, ::Verbosity::Silent, "", "",
+         std::vector<std::string>{}}};
     using ExcisionQuantities =
         control_system::QueueTags::SizeExcisionQuantities<Frame::Distorted>;
     using HorizonQuantities =
@@ -536,11 +539,8 @@ void test_size_error_one_step(
         // before it evaluates the DeltaR control error.
         const double horizon_00 =
             averaged_horizon_values[0][0] +
-            time_from_average * averaged_horizon_values[1][0] +
-            0.5 * square(time_from_average) * averaged_horizon_values[2][0];
-        const double dt_horizon_00 =
-            averaged_horizon_values[1][0] +
-            time_from_average * averaged_horizon_values[2][0];
+            time_from_average * averaged_horizon_values[1][0];
+        const double dt_horizon_00 = averaged_horizon_values[1][0];
 
         const auto current_lambda_dt_lambda =
             function_of_time->func_and_deriv(current_time);

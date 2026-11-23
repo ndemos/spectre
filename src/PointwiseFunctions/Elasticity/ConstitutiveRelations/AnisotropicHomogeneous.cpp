@@ -7,8 +7,8 @@
 #include <blaze/math/DynamicMatrix.h>
 #include <blaze/math/DynamicVector.h>
 #include <blaze/math/SymmetricMatrix.h>
-#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <pup.h>
 
@@ -16,6 +16,7 @@
 #include "DataStructures/Tensor/Tensor.hpp"
 #include "Options/Context.hpp"
 #include "Options/ParseError.hpp"
+#include "Utilities/Gsl.hpp"
 #include "Utilities/MakeWithValue.hpp"
 
 namespace Elasticity::ConstitutiveRelations {
@@ -43,36 +44,32 @@ inline void voigt_to_stress(
   get<2, 2>(*stress) = s[2];
 
   // tnsr::II stores symmetric components; set only lower-tri
-  stress->get(2, 1) = s[3];  // yz
-  stress->get(2, 0) = s[4];  // xz
-  stress->get(1, 0) = s[5];  // xy
+  get<2, 1>(*stress) = s[3];  // yz
+  get<2, 0>(*stress) = s[4];  // xz
+  get<1, 0>(*stress) = s[5];  // xy
 }
 }  // namespace
+
+AnisotropicHomogeneous::AnisotropicHomogeneous() {
+  for (auto& row : stiffness_) {
+    row.fill(std::numeric_limits<double>::signaling_NaN());
+  }
+}
 
 AnisotropicHomogeneous::AnisotropicHomogeneous(
     std::array<std::array<double, 6>, 6> stiffness,
     const Options::Context& context)
     : stiffness_(std::move(stiffness)) {
-  // Non-finite entries would make the eigenvalue computation below
-  // meaningless (or fail inside LAPACK), so reject them first.
-  for (size_t i = 0; i < 6; ++i) {
-    for (size_t j = 0; j < 6; ++j) {
-      if (not std::isfinite(stiffness_[i][j])) {
-        PARSE_ERROR(context,
-                    "StiffnessMatrix entries must be finite, "
-                    "but C["
-                        << i << "][" << j << "]=" << stiffness_[i][j]);
-      }
-    }
-  }
   for (size_t i = 0; i < 6; ++i) {
     for (size_t j = i + 1; j < 6; ++j) {
-      if (stiffness_[i][j] != stiffness_[j][i]) {
+      if (gsl::at(gsl::at(stiffness_, i), j) !=
+          gsl::at(gsl::at(stiffness_, j), i)) {
         PARSE_ERROR(context,
                     "StiffnessMatrix must be symmetric in Voigt notation, but "
-                        << "C[" << i << "][" << j << "]=" << stiffness_[i][j]
+                        << "C[" << i << "][" << j
+                        << "]=" << gsl::at(gsl::at(stiffness_, i), j)
                         << " and C[" << j << "][" << i
-                        << "]=" << stiffness_[j][i]);
+                        << "]=" << gsl::at(gsl::at(stiffness_, j), i));
       }
     }
   }
@@ -86,7 +83,7 @@ AnisotropicHomogeneous::AnisotropicHomogeneous(
   blaze::SymmetricMatrix<blaze::DynamicMatrix<double>> voigt_matrix(6);
   for (size_t i = 0; i < 6; ++i) {
     for (size_t j = i; j < 6; ++j) {
-      voigt_matrix(i, j) = stiffness_[i][j];
+      voigt_matrix(i, j) = gsl::at(gsl::at(stiffness_, i), j);
     }
   }
   blaze::DynamicVector<double> eigenvalues(6);
@@ -122,18 +119,13 @@ void AnisotropicHomogeneous::stress(
     const tnsr::I<DataVector, 3>& /*x*/) const {
   const auto e = strain_to_voigt(strain);
 
-  std::array<DataVector, 6> s{make_with_value<DataVector>(strain, 0.0),
-                              make_with_value<DataVector>(strain, 0.0),
-                              make_with_value<DataVector>(strain, 0.0),
-                              make_with_value<DataVector>(strain, 0.0),
-                              make_with_value<DataVector>(strain, 0.0),
-                              make_with_value<DataVector>(strain, 0.0)};
+  auto s = make_with_value<std::array<DataVector, 6>>(strain, 0.0);
 
   for (size_t a = 0; a < 6; ++a) {
     for (size_t b = 0; b < 6; ++b) {
-      s[a] += stiffness_[a][b] * e[b];
+      gsl::at(s, a) += gsl::at(gsl::at(stiffness_, a), b) * gsl::at(e, b);
     }
-    s[a] *= -1.0;  // T = -C e
+    gsl::at(s, a) *= -1.0;  // T = -C e
   }
 
   voigt_to_stress(stress, s);
